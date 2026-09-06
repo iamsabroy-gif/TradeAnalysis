@@ -1,0 +1,483 @@
+# Phase 1 Gatekeeper — Algorithm Specification
+
+*Implementation-ready pseudocode for every check in `Phase1-Rules.md`. This file is the
+bridge between the rules doc (human-readable policy) and an application (deterministic
+code). Every function below maps 1:1 to a section of `Phase1-Rules.md` — thresholds,
+exceptions, and edge cases are copied verbatim, not reinterpreted. If the rules file is
+ever updated, update this file in the same commit.*
+
+Status values used throughout: `PASS`, `FAIL`, `INCONCLUSIVE`. Never a numeric score.
+
+---
+
+## 0. Data model (inputs)
+
+```
+enum CompanyType { PRIVATE_PROMOTER, GOVT_PSU, PROFESSIONALLY_MANAGED }
+
+struct CompanyInput {
+  ticker: string
+  as_of_date: date
+  company_type: CompanyType          // derived by classify_company_type() below
+
+  // Check 1 — Auditor & Regulator
+  auditor_resigned_mid_tenure_last_3y: bool | null
+  audit_opinion: enum { CLEAN, QUALIFIED, ADVERSE, DISCLAIMER } | null
+  regulatory_action: {
+    active_or_past_5y: bool | null
+    nature: enum { FRAUD, SIPHONING, MANIPULATION, ACCOUNTING_IRREGULARITY,
+                    ROUTINE_PROCEDURAL, NONE } | null
+  }
+  legal_fees: number | null            // latest FY, currency units
+  audit_fees: number | null            // latest FY, currency units
+  legal_fees_prior_year: number | null // for surge check
+
+  // Check 2 — Promoter Pledge
+  govt_shareholding_pct: number | null       // central+state, direct+indirect
+  promoter_holding_pct_of_company: number | null   // promoter shares / total shares outstanding
+  pledged_pct_of_promoter_holding: number | null   // latest quarter
+  pledged_pct_history_last_4q: number[] | null     // oldest -> newest, same metric
+  pledged_pct_of_total_shares: number | null       // for low-base guard
+
+  // Check 3 — Related Party Transactions
+  rpt_sales_plus_purchases: number | null
+  revenue: number | null
+  unusual_affiliate_dealings: bool | null   // large/unexplained loans/deals w/ unlisted affiliates
+
+  // Check 4 — Contingent Liabilities
+  contingent_liabilities: number | null
+  net_worth: number | null
+
+  // Check 5 — Cash Conversion (5 fiscal years, oldest -> newest)
+  cfo_last_5y: number[] | null   // cash from operations, len <= 5
+  pat_last_5y: number[] | null   // profit after tax, len <= 5
+
+  // Check 6 — Executive Stability
+  cfo_changes_last_3y: int | null
+  restatement_of_past_accounts: bool | null
+
+  // Data availability flags — explicit "we do not have this" per field group.
+  // An application should set these based on what was actually retrieved,
+  // never infer availability from a null defaulting to false.
+  years_of_track_record_available: int   // company's actual listed/reporting history
+}
+
+struct CheckResult {
+  check_id: int                 // 1-6
+  status: PASS | FAIL | INCONCLUSIVE
+  finding: string                // human-readable, numbers + thresholds, e.g. "pledge 12% vs 10% limit"
+  reason_code: string            // machine-readable, e.g. "PLEDGE_ABOVE_10PCT"
+  missing_data: string | null    // populated only when INCONCLUSIVE
+  citation: string | null        // source + period, required whenever a number is used
+}
+
+struct Phase1Result {
+  ticker: string
+  as_of_date: date
+  company_type: CompanyType
+  checks: CheckResult[6]
+  verdict: REJECT | CLEARED_TO_PHASE_2 | HOLD_INCONCLUSIVE
+  failing_checks: int[]           // check_ids where status == FAIL
+  inconclusive_checks: int[]      // check_ids where status == INCONCLUSIVE
+}
+```
+
+**Golden rule for every function below:** if a required input field is `null` (not
+merely zero/false — a real "we could not find this"), the check returns `INCONCLUSIVE`,
+never a guessed `PASS` or `FAIL`. Zero and false are valid data points, not missing data;
+do not conflate "0%" with "unknown."
+
+---
+
+## 1. Helper: company type classification
+
+Feeds Check 2's auto-pass exceptions. Run this once per company before the checks.
+
+```
+function classify_company_type(govt_shareholding_pct, promoter_holding_pct_of_company) -> CompanyType:
+    if govt_shareholding_pct is not null and govt_shareholding_pct >= 51:
+        return GOVT_PSU
+    if promoter_holding_pct_of_company is not null and promoter_holding_pct_of_company == 0:
+        return PROFESSIONALLY_MANAGED
+    return PRIVATE_PROMOTER
+```
+
+Note: a partially-disinvested former PSU with govt stake < 51% is `PRIVATE_PROMOTER` for
+this classifier and gets no auto-pass — per rules §2, Check 2.
+
+---
+
+## 2. Helper: track-record sufficiency guard
+
+Applies to Checks 1, 5, 6 (lookback windows of 3, 5, 3 years respectively). Wrap the
+core FAIL logic of those checks with this guard.
+
+```
+function apply_track_record_guard(years_required, years_available, disqualifying_event_found) -> Status | null:
+    // Returns a forced status, or null meaning "proceed to normal evaluation"
+    if years_available >= years_required:
+        return null   // full window available, evaluate normally
+    if disqualifying_event_found:
+        return FAIL   // a short history can still fail — never blocked by insufficient data
+    return INCONCLUSIVE   // "insufficient track record (only N years available)"
+```
+
+Each check function calls this first and short-circuits if it returns non-null.
+
+---
+
+## 3. Check 1 — Auditor & Regulator Integrity (Section A Q1)
+
+```
+function check1_auditor_regulator(input: CompanyInput) -> CheckResult:
+
+    // Required fields
+    required = [auditor_resigned_mid_tenure_last_3y, audit_opinion,
+                regulatory_action.active_or_past_5y, legal_fees, audit_fees]
+    if any(required) is null:
+        return INCONCLUSIVE("Check 1: missing one or more of "
+                             "[auditor resignation history, audit opinion, "
+                             "regulatory action status, legal/audit fee figures]")
+
+    guard = apply_track_record_guard(
+        years_required = 3,
+        years_available = input.years_of_track_record_available,
+        disqualifying_event_found = (
+            input.auditor_resigned_mid_tenure_last_3y == true
+            or input.audit_opinion != CLEAN
+            or input.regulatory_action.nature in {FRAUD, SIPHONING, MANIPULATION, ACCOUNTING_IRREGULARITY}
+        )
+    )
+    if guard is not null:
+        return build_result(1, guard)
+
+    fail_reasons = []
+
+    if input.auditor_resigned_mid_tenure_last_3y == true:
+        fail_reasons.append("AUDITOR_RESIGNED_MID_TENURE")
+
+    if input.audit_opinion != CLEAN:
+        fail_reasons.append("AUDIT_OPINION_NOT_CLEAN:" + input.audit_opinion)
+
+    if input.regulatory_action.active_or_past_5y == true
+       and input.regulatory_action.nature in {FRAUD, SIPHONING, MANIPULATION, ACCOUNTING_IRREGULARITY}:
+        fail_reasons.append("REGULATORY_ACTION:" + input.regulatory_action.nature)
+    // Note: ROUTINE_PROCEDURAL nature is explicitly excluded — not a fail trigger.
+
+    if input.audit_fees > 0:
+        ratio = input.legal_fees / input.audit_fees
+        surge = (input.legal_fees_prior_year is not null and input.legal_fees_prior_year > 0
+                 and input.legal_fees / input.legal_fees_prior_year > 2)
+        if ratio > 5:
+            fail_reasons.append("LEGAL_FEES_EXCEED_5X_AUDIT_FEES:" + ratio)
+        elif surge:
+            fail_reasons.append("LEGAL_FEES_SURGE_OVER_2X_YOY")
+    else:
+        // audit_fees missing/zero but flagged not-null above — treat as inconclusive on this sub-check only
+        fail_reasons.append_inconclusive_note("audit_fees is zero/invalid; cannot compute legal/audit ratio")
+
+    if fail_reasons is non-empty:
+        return FAIL(1, fail_reasons, finding = format_numbers(fail_reasons))
+    else:
+        return PASS(1, "clean opinion, no mid-tenure resignation, no disqualifying "
+                       "regulatory action, legal/audit fee ratio normal")
+```
+
+---
+
+## 4. Check 2 — Promoter Pledge & Encumbrance (Section A Q2)
+
+```
+function check2_promoter_pledge(input: CompanyInput) -> CheckResult:
+
+    // Auto-pass exceptions first — no data-availability check needed for these paths
+    if input.company_type == GOVT_PSU:
+        return PASS(2, "Government PSU (govt shareholding >= 51%) — pledge check N/A")
+
+    if input.company_type == PROFESSIONALLY_MANAGED:
+        return PASS(2, "Zero promoter holding — no promoter shares exist to pledge")
+
+    // Normal path requires these fields
+    required = [promoter_holding_pct_of_company, pledged_pct_of_promoter_holding,
+                pledged_pct_history_last_4q]
+    if any(required) is null:
+        return INCONCLUSIVE("Check 2: missing promoter holding %, latest pledge %, "
+                             "or 4-quarter pledge history")
+
+    trend_rising = detect_rising_trend(input.pledged_pct_history_last_4q)
+        // rising trend = each quarter >= previous (allow ties), overall net increase,
+        // OR any single-quarter jump > 2 percentage points vs prior quarter
+
+    low_base = input.promoter_holding_pct_of_company < 5
+
+    if low_base:
+        if input.pledged_pct_of_total_shares is null:
+            return INCONCLUSIVE("Check 2: promoter base < 5% of company; "
+                                 "pledged % of total shares outstanding required but missing")
+
+        fail_a = (input.pledged_pct_of_promoter_holding > 10
+                  and input.pledged_pct_of_total_shares > 0.5)
+        fail_b = pledge_material_vs_promoter_liquidity(input)  // qualitative check, defaults false if unknown/undeterminable — do not fabricate
+
+        if fail_a or fail_b:
+            return FAIL(2, "pledge material even after low-base adjustment: "
+                           f"{input.pledged_pct_of_promoter_holding}% of promoter holding, "
+                           f"{input.pledged_pct_of_total_shares}% of total shares")
+        else:
+            return PASS(2, "pledge % elevated due to small promoter base, "
+                           "not treated as a red flag")
+
+    // Standard thresholds
+    if input.pledged_pct_of_promoter_holding > 10:
+        return FAIL(2, f"pledge {input.pledged_pct_of_promoter_holding}% "
+                       "vs 10% limit (absolute threshold)")
+
+    if trend_rising:
+        return FAIL(2, "pledged % rising over last 2-4 quarters "
+                       "(or unexplained single-quarter spike > 2pp)")
+
+    return PASS(2, f"pledge {input.pledged_pct_of_promoter_holding}% "
+                   "(<= 10%), stable/declining over last 4 quarters")
+```
+
+```
+function detect_rising_trend(history: number[]) -> bool:
+    // history is oldest -> newest, length up to 4
+    if length(history) < 2:
+        return false   // not enough data to call a trend; caller still has the >10% absolute check
+    if history[last] - history[first] > 0 and is_non_decreasing(history):
+        return true
+    for i in 1..length(history)-1:
+        if history[i] - history[i-1] > 2:
+            return true
+    return false
+```
+
+---
+
+## 5. Check 3 — Related-Party "Leakage" (Section A Q3)
+
+```
+function check3_related_party(input: CompanyInput) -> CheckResult:
+
+    required = [rpt_sales_plus_purchases, revenue, unusual_affiliate_dealings]
+    if any(required) is null:
+        return INCONCLUSIVE("Check 3: missing RPT sales+purchases, revenue, "
+                             "or affiliate-dealings assessment")
+
+    if input.revenue <= 0:
+        return INCONCLUSIVE("Check 3: revenue is zero/negative, RPT % undefined")
+
+    rpt_pct = (input.rpt_sales_plus_purchases / input.revenue) * 100
+
+    if rpt_pct > 5:
+        return FAIL(3, f"RPT {rpt_pct}% of revenue vs 5% limit")
+
+    if input.unusual_affiliate_dealings == true:
+        return FAIL(3, "large/unexplained loans or deals with promoter-owned unlisted affiliates")
+
+    return PASS(3, f"RPT {rpt_pct}% of revenue (<= 5%), no suspicious affiliate transactions")
+```
+
+---
+
+## 6. Check 4 — Contingent Liabilities (Section A Q4)
+
+```
+function check4_contingent_liabilities(input: CompanyInput) -> CheckResult:
+
+    required = [contingent_liabilities, net_worth]
+    if any(required) is null:
+        return INCONCLUSIVE("Check 4: missing contingent liabilities or net worth figure")
+
+    if input.net_worth <= 0:
+        return FAIL(4, f"net worth {input.net_worth} <= 0 (broken balance sheet)")
+
+    ratio_pct = (input.contingent_liabilities / input.net_worth) * 100
+
+    if ratio_pct > 15:
+        return FAIL(4, f"contingent liabilities {ratio_pct}% of net worth vs 15% limit")
+
+    return PASS(4, f"contingent liabilities {ratio_pct}% of net worth (<= 15%)")
+```
+
+---
+
+## 7. Check 5 — Show Me the Cash (Section A Q5)
+
+```
+function check5_cash_conversion(input: CompanyInput) -> CheckResult:
+
+    if input.cfo_last_5y is null or input.pat_last_5y is null:
+        return INCONCLUSIVE("Check 5: missing 5-year CFO and/or PAT series")
+
+    n = length(input.cfo_last_5y)
+    if n != length(input.pat_last_5y):
+        return INCONCLUSIVE("Check 5: CFO and PAT series have mismatched year counts")
+
+    negative_cfo_years = count(y in input.cfo_last_5y where y < 0)
+    cumulative_cfo = sum(input.cfo_last_5y)
+    cumulative_pat = sum(input.pat_last_5y)
+
+    disqualifying_event = (negative_cfo_years >= 3) or (cumulative_pat <= 0) or (
+        cumulative_pat > 0 and (cumulative_cfo / cumulative_pat) < 0.80
+    )
+
+    guard = apply_track_record_guard(
+        years_required = 5,
+        years_available = n,   // use actual series length, not the company-wide field, since this check's window is specifically 5 FYs of CFO/PAT data
+        disqualifying_event_found = disqualifying_event
+    )
+    if guard is not null:
+        return build_result(5, guard)
+
+    if negative_cfo_years >= 3:
+        return FAIL(5, f"{negative_cfo_years} of last 5 years had negative CFO (>= 3 triggers fail)")
+
+    if cumulative_pat <= 0:
+        return FAIL(5, f"cumulative 5-yr PAT {cumulative_pat} <= 0")
+
+    cfo_pat_ratio = cumulative_cfo / cumulative_pat
+    if cfo_pat_ratio < 0.80:
+        return FAIL(5, f"cumulative CFO/PAT ratio {cfo_pat_ratio} < 0.80")
+
+    return PASS(5, f"CFO/PAT ratio {cfo_pat_ratio} (>= 0.80), "
+                   f"{negative_cfo_years} negative-CFO years (<= 2)")
+```
+
+---
+
+## 8. Check 6 — Executive Stability (Section A Q6)
+
+```
+function check6_executive_stability(input: CompanyInput) -> CheckResult:
+
+    required = [cfo_changes_last_3y, restatement_of_past_accounts]
+    if any(required) is null:
+        return INCONCLUSIVE("Check 6: missing CFO change count or restatement history")
+
+    disqualifying_event = (input.cfo_changes_last_3y > 1) or (input.restatement_of_past_accounts == true)
+
+    guard = apply_track_record_guard(
+        years_required = 3,
+        years_available = input.years_of_track_record_available,
+        disqualifying_event_found = disqualifying_event
+    )
+    if guard is not null:
+        return build_result(6, guard)
+
+    if input.cfo_changes_last_3y > 1:
+        return FAIL(6, f"{input.cfo_changes_last_3y} CFO changes in last 3 years (> 1 triggers fail)")
+
+    if input.restatement_of_past_accounts == true:
+        return FAIL(6, "retroactive restatement of past accounts")
+
+    return PASS(6, f"{input.cfo_changes_last_3y} CFO change(s) (<= 1), no restatement")
+```
+
+---
+
+## 9. Master orchestrator — the gate
+
+```
+function run_phase1(input: CompanyInput) -> Phase1Result:
+
+    input.company_type = classify_company_type(
+        input.govt_shareholding_pct, input.promoter_holding_pct_of_company)
+
+    // Evaluate ALL six checks — never short-circuit the evaluation itself.
+    // Short-circuiting only applies to how much further analysis happens AFTER
+    // the verdict (i.e. stop before Phase 2), not to which Phase 1 checks run.
+    results = [
+        check1_auditor_regulator(input),
+        check2_promoter_pledge(input),
+        check3_related_party(input),
+        check4_contingent_liabilities(input),
+        check5_cash_conversion(input),
+        check6_executive_stability(input),
+    ]
+
+    failing = [r.check_id for r in results if r.status == FAIL]
+    inconclusive = [r.check_id for r in results if r.status == INCONCLUSIVE]
+
+    if failing is non-empty:
+        verdict = REJECT
+    elif inconclusive is non-empty:
+        verdict = HOLD_INCONCLUSIVE
+    else:
+        verdict = CLEARED_TO_PHASE_2
+
+    return Phase1Result {
+        ticker: input.ticker,
+        as_of_date: input.as_of_date,
+        company_type: input.company_type,
+        checks: results,
+        verdict: verdict,
+        failing_checks: failing,
+        inconclusive_checks: inconclusive,
+    }
+```
+
+**Decision table (must match `Phase1-Rules.md` §3 exactly):**
+
+| Any FAIL? | Any INCONCLUSIVE (given no FAIL)? | Verdict |
+| :-: | :-: | :-- |
+| Yes | — | `REJECT` |
+| No | Yes | `HOLD_INCONCLUSIVE` |
+| No | No | `CLEARED_TO_PHASE_2` |
+
+FAIL always dominates INCONCLUSIVE — a stock is never "held" when it has already failed
+something; it is rejected outright.
+
+---
+
+## 10. Rendering layer (kept separate from the decision engine)
+
+The functions above produce `Phase1Result`, a purely internal/analyst-facing object
+(maps to `Phase1-Rules.md` §4's table). **Do not let the decision engine format
+investor-facing prose.** A separate rendering function must:
+
+1. Take `Phase1Result` as input (never re-derive numbers — display exactly what the
+   engine computed).
+2. Apply `user.md`'s wrapping rules (§5 of `Phase1-Rules.md`): plain-English lead,
+   term explanations on first use, numbers translated to relatable facts, the
+   Pass/Fail translation table, a "so what does this mean for you" line per section,
+   and the verbatim SEBI disclaimer from `user.md` §9.
+3. Never fabricate a number, source, or explanation not present in the underlying
+   `CheckResult` objects — if `citation` is null, the renderer must surface that as
+   missing sourcing rather than inventing one.
+
+Keeping this as two layers (engine → renderer) means the engine can be unit-tested
+against numeric fixtures independent of prose, and the prose layer can change without
+touching pass/fail logic.
+
+---
+
+## 11. Test fixtures to validate an implementation
+
+Before wiring this into an app, run these fixtures through `run_phase1()` and confirm
+the verdicts match, since they exercise every branch:
+
+| Fixture | Expected verdict | Exercises |
+| :-- | :-- | :-- |
+| All 6 fields fully populated, all within safe thresholds | `CLEARED_TO_PHASE_2` | happy path |
+| Audit opinion = `QUALIFIED`, everything else clean | `REJECT` (Check 1) | single-fail short-circuit reporting |
+| Pledge 34%, rising trend | `REJECT` (Check 2) | §5a worked example |
+| Govt shareholding 55%, promoter pledge fields all null | `CLEARED_TO_PHASE_2` if others pass | Check 2 auto-pass bypasses its own null-check |
+| Promoter holding 3% of company, pledge 40% of promoter holding, 0.3% of total shares | `PASS` on Check 2 w/ low-base note | low-base guard |
+| Company listed 2 years, no disqualifying events, Check 1/6 | `INCONCLUSIVE` on 1 & 6, others normal | insufficient track record → HOLD |
+| Company listed 1 year but had a qualified audit opinion that year | `REJECT` (Check 1) | short history still fails on a real event |
+| CFO/PAT ratio 0.79 cumulative, 2 negative-CFO years | `REJECT` (Check 5, ratio trigger only) | independent OR triggers |
+| Missing `net_worth` entirely | `HOLD_INCONCLUSIVE` overall (assuming no other fails) | missing-data guard, never estimate |
+| Net worth = -500 (negative) | `REJECT` (Check 4) | broken balance sheet |
+| Legal fees 6x audit fees, opinion clean, no other issues | `REJECT` (Check 1, fee-ratio sub-trigger) | Check 1's 4th sub-condition in isolation |
+
+---
+
+## 12. Change-control note
+
+This file is derived entirely from `Phase1-Rules.md`. If a threshold, exception, or
+decision rule changes there, mirror the exact change here in the same edit — do not let
+the two drift. If an application is later generated from this spec, treat
+`Phase1-Rules.md` as the source of truth for *policy* and this file as the source of
+truth for *implementation shape*; neither should introduce a rule the other doesn't have.

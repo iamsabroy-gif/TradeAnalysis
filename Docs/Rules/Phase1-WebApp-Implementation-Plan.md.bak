@@ -1,0 +1,439 @@
+# Phase 1 Gatekeeper — Web Application Implementation Plan
+
+*How to turn `Phase1-Algorithms.md` (the decision engine spec) and `Phase1-Rules.md`
+(the policy) into a running web application. Covers scraping, PDF extraction (including
+hard-to-parse PDFs), report generation with a PDF export option, and bulk ticker input
+via CSV/Excel. This is an architecture and build plan, not code — implementation should
+follow this sequencing.*
+
+---
+
+## 1. System overview
+
+Five components, deliberately decoupled so a weak link (a scraper breaking, a PDF that
+won't parse) degrades gracefully into "INCONCLUSIVE, needs manual input" instead of
+crashing the pipeline or silently guessing.
+
+```
+                         ┌─────────────────────┐
+   CSV/Excel upload ───▶ │   Batch Controller   │
+   Single ticker    ───▶ │  (job fan-out layer) │
+                         └──────────┬───────────┘
+                                    │ one job per ticker
+                                    ▼
+                         ┌─────────────────────┐
+                         │   Job Queue/Worker   │  (async, retryable)
+                         └──────────┬───────────┘
+                                    ▼
+        ┌───────────────────────────────────────────────┐
+        │              Data Acquisition Layer             │
+        │  ┌───────────────┐        ┌───────────────────┐ │
+        │  │  Web Scraper   │        │  PDF Extractor    │ │
+        │  │ (Screener/BSE/ │───────▶│ (Annual Reports,  │ │
+        │  │  NSE/SEBI)     │  PDFs  │  Reg-30 filings)  │ │
+        │  └───────────────┘        └───────────────────┘ │
+        └──────────────────────┬──────────────────────────┘
+                                ▼  normalized CompanyInput
+                    ┌───────────────────────┐
+                    │   Decision Engine       │  (pure functions from
+                    │  (Phase1-Algorithms.md) │   Phase1-Algorithms.md §3-9)
+                    └───────────┬────────────┘
+                                ▼  Phase1Result
+                    ┌───────────────────────┐
+                    │   Rendering Layer       │
+                    │  (internal table +      │
+                    │  user.md investor prose)│
+                    └───────────┬────────────┘
+                                ▼
+                 ┌──────────────┴───────────────┐
+                 ▼                               ▼
+          Web/JSON report                  PDF export
+      (per ticker + batch matrix)      (per ticker + consolidated)
+```
+
+**Design principle carried over from the algo spec:** the Decision Engine never touches
+a scraper, a PDF, or a browser. It only accepts a `CompanyInput` object. This means the
+engine can be fully unit-tested against the 11 fixtures in `Phase1-Algorithms.md` §11
+with zero network/PDF dependencies, and the acquisition layer can be swapped or patched
+without touching pass/fail logic.
+
+---
+
+## 2. Tech stack recommendation
+
+| Layer | Choice | Why |
+| :-- | :-- | :-- |
+| Backend / API | Python 3.11+, FastAPI | Best-in-class PDF/OCR/table-extraction ecosystem (see §4); async-friendly for scraping fan-out |
+| Job queue | Celery + Redis (or RQ for a simpler start) | Scraping + PDF parsing are slow (seconds–minutes/ticker); must be async, retryable, individually failable per ticker |
+| Database | PostgreSQL | Relational integrity across companies → filings → checks → reports; JSONB columns for raw extracted payloads |
+| Object storage | S3-compatible (AWS S3 / MinIO for local dev) | Store downloaded Annual Report / Reg-30 PDFs and generated report PDFs, addressable by ticker+doc hash |
+| PDF text/table extraction | `pdfplumber` (primary), `camelot-py` (table-heavy notes), `PyMuPDF`/`fitz` (fast text + layout) | Layered by document type, see §4.2 |
+| OCR fallback | `Tesseract` via `pytesseract`, pre-processed with `OpenCV` (deskew/binarize) | For scanned/image-only PDFs — see §4.3 |
+| CSV/Excel ingestion | `pandas` + `openpyxl` | Native support, handles both `.csv` and `.xlsx` |
+| Report → PDF rendering | `WeasyPrint` (HTML/CSS → PDF) | Keeps one HTML template as the single source for both web and PDF rendering — no separate PDF-only template to maintain |
+| Frontend | React (Vite) or Next.js, minimal | Ticker input (single + bulk upload), job status, report viewer, download buttons |
+| Scraping/browser automation | `httpx`/`requests` for static pages; Playwright only where a site requires JS rendering | Prefer plain HTTP first — browser automation is slower and more fragile; escalate only when needed |
+
+This stack is a recommendation, not a hard requirement — every module below is
+specified independently of the exact library, so a Node/TypeScript equivalent
+(`pdf-parse`/`pdf.js`, `pdf-tables-extractor`, `tesseract.js`, `puppeteer`) is a valid
+substitution if the team prefers a single-language stack with the frontend.
+
+---
+
+## 3. Data Acquisition Layer — Web Scraper
+
+Maps to `Phase1-Rules.md` §8.1–8.3.
+
+### 3.1 Source adapter pattern
+
+One adapter per source, all implementing a common interface, so adding a 7th source
+later doesn't touch the orchestrator:
+
+```
+interface SourceAdapter {
+  name: string
+  fetch(ticker_or_scrip_code) -> RawPage[]      // HTML/JSON payloads
+  parse(RawPage[]) -> PartialCompanyInput         // maps to CompanyInput fields
+  health_check() -> bool                          // cheap ping to detect layout/site changes early
+}
+```
+
+Adapters to build, in priority order (matches the rules file's "Primary Hub" framing):
+
+1. **ScreenerAdapter** — primary hub. Pulls: 5-yr CFO/PAT table (Check 5), trailing
+   4–8 quarters promoter holding + pledge % (Check 2), and the Documents section's
+   Annual Report PDF links (handed off to the PDF Extractor).
+2. **BSEAnnouncementsAdapter** — Reg-30 disclosures, filtered by category
+   (`Resignation`, `Company Update`) for auditor/CFO exits post-dating the latest AR
+   (Checks 1 & 6).
+3. **BSEShareholdingAdapter** — Regulation 31 filing, cross-verification for Check 2's
+   pledge %, independent of Screener's number (flag a discrepancy > 1pp between the two
+   sources rather than silently picking one).
+4. **NSEAnnouncementsAdapter** — backup/fallback for #2 when BSE is unavailable or a
+   dual-listed stock's NSE filing is more current.
+5. **SEBIEnforcementAdapter** — searchable order archive for Check 1's regulatory-action
+   field; this one is closer to a targeted search than a scrape (see 3.3).
+
+### 3.2 Resilience requirements (non-negotiable, since these are third-party sites)
+
+- **Caching layer**: cache every fetched page/PDF by `(source, ticker, fetch_date)` for
+  at least 24h. Screener/BSE data doesn't change intraday for this use case — don't
+  re-hit the same URL twice in one run, and don't re-scrape on every batch re-run.
+- **Rate limiting + backoff**: fixed delay between requests per source (configurable,
+  default 1–2s), exponential backoff on 429/503, circuit breaker that pauses an
+  adapter for N minutes after repeated failures rather than hammering a struggling site.
+- **User-Agent / robots.txt respect**: identify the scraper honestly; check each site's
+  `robots.txt` at startup and log (don't silently ignore) any disallowed paths — the
+  Screener/BSE/NSE/SEBI endpoints named in the rules file are the ones this app is
+  scoped to use, not a general-purpose crawler.
+- **Layout-change detection**: each adapter's `parse()` should assert on expected
+  structure (e.g., "promoter holding table has N columns") and raise a distinct
+  `LayoutChangedError` rather than silently returning garbage — this surfaces as
+  INCONCLUSIVE with a specific "source layout changed, needs adapter fix" note instead
+  of a wrong number flowing into the Decision Engine.
+- **No fabrication on failure**: if an adapter fails after retries, the corresponding
+  `CompanyInput` fields stay `null`. Per the algo spec's golden rule, that's what turns
+  into `INCONCLUSIVE`, never a guess.
+
+### 3.3 SEBI regulatory scan — special case
+
+This one isn't a structured table scrape; it's closer to the targeted search in rules
+§8.1's "Targeted Regulatory Press Scan" row. Implementation:
+
+- Query SEBI's enforcement archive with the company name.
+- Additionally run the general web query pattern from the rules file
+  (`"{Company}" AND (SEBI OR "Enforcement Directorate" OR SFIO OR CBI) AND (fraud OR
+  investigation OR debarred OR "show cause")`) via a search API (e.g., a news/web search
+  API the team already has access to).
+- This step's output is inherently lower-confidence than a structured filing. Store it
+  with a `confidence: search_based` tag and require it to be surfaced in the report as
+  "no adverse result found in a web scan as of {date}" rather than a hard "no
+  regulatory issues" claim — a scan is evidence of absence, not proof.
+
+---
+
+## 4. Data Acquisition Layer — PDF Extractor
+
+This is the highest-risk module because Annual Report PDFs vary enormously in quality.
+Maps to rules §8.2–8.3 (auditor's opinion, RPT note, contingent liabilities note,
+KMP changes, legal/audit fee notes).
+
+### 4.1 Classify the PDF before extracting
+
+First step for every downloaded PDF, before any field extraction is attempted:
+
+```
+function classify_pdf(pdf_path) -> PdfClass:
+    text_layer_ratio = extractable_text_chars / total_page_count
+    if text_layer_ratio > threshold_native:      // has a real, dense text layer
+        return NATIVE_TEXT
+    if has_partial_text_layer(pdf):               // e.g. scanned pages mixed with native ones
+        return HYBRID
+    return SCANNED_IMAGE_ONLY                      // no usable text layer at all
+```
+
+This classification decides which extraction strategy runs, and is stored against the
+document so re-runs don't re-classify every time.
+
+### 4.2 Extraction strategy ladder (try cheap/reliable first, escalate only if needed)
+
+| Tier | Method | Used for | Notes |
+| :-- | :-- | :-- | :-- |
+| 1 | `PyMuPDF` text extraction + keyword/section anchoring | `NATIVE_TEXT` PDFs, all narrative sections (Auditor's Opinion paragraph, Board's Report KMP changes) | Search for section headers ("INDEPENDENT AUDITOR'S REPORT", "Opinion", "Key Managerial Personnel") with fuzzy matching to survive minor formatting differences year to year |
+| 2 | `pdfplumber` table extraction | `NATIVE_TEXT` PDFs, numeric notes (Related Party Transactions, Contingent Liabilities, Auditor Remuneration, Legal & Professional charges) | Tables in Annual Report notes are usually plain PDF tables, not images — pdfplumber's `extract_tables()` handles most of these |
+| 3 | `camelot-py` (lattice + stream modes) | Same numeric notes when pdfplumber's table extraction produces malformed/merged cells | Camelot's lattice mode is strong when notes have visible grid lines; stream mode as fallback when they don't |
+| 4 | OCR (`pytesseract` + `OpenCV` pre-processing: deskew, binarize, upscale) | `SCANNED_IMAGE_ONLY` pages, or `HYBRID` PDFs' scanned pages specifically | Run OCR per-page only on pages that failed tiers 1–3, not the whole document — keeps cost down |
+| 5 | Manual review queue | Anything tier 1–4 couldn't produce a confident value for | See 4.4 — this is not a failure state, it's a designed fallback |
+
+### 4.3 Confidence scoring, not silent success/failure
+
+Every extracted field gets a confidence tag, not just a value:
+
+```
+struct ExtractedField {
+  value: any
+  confidence: HIGH | MEDIUM | LOW
+  extraction_method: enum { NATIVE_TEXT, TABLE_PARSE, OCR, MANUAL }
+  source_page: int
+  raw_snippet: string          // the exact text/row the value came from, for audit
+}
+```
+
+- `HIGH` — Tier 1/2 native extraction with an exact section-header match.
+- `MEDIUM` — Tier 3 table-repair, or a Tier 1 match on a fuzzy/partial header.
+- `LOW` — OCR output, or a regex match with no confirmed section anchor.
+
+**Rule for the Decision Engine handoff:** only `HIGH` and `MEDIUM` confidence fields
+populate `CompanyInput` automatically. `LOW`-confidence fields are held for manual
+review (§4.4) and the corresponding `CompanyInput` field stays `null` until a human
+confirms or corrects it — this directly feeds the algo spec's `INCONCLUSIVE` path
+rather than letting an OCR misread silently produce a wrong PASS/FAIL.
+
+### 4.4 Manual review queue (the answer to "some PDFs are harder to extract")
+
+This is the load-bearing piece for hard-to-parse PDFs — the system must not block or
+guess, it must degrade to a clearly-flagged human step:
+
+1. Any field that falls out of tiers 1–4 (or lands at `LOW` confidence) is written to a
+   `review_queue` table: `{ticker, check_id, field_name, best_guess_value, raw_snippet,
+   source_page, pdf_url}`.
+2. A lightweight reviewer UI shows the flagged page image (or the relevant text
+   snippet) side-by-side with an input box — a human confirms or overrides the value in
+   seconds rather than reading the whole report.
+3. Once resolved, the value is written back into `CompanyInput` with
+   `extraction_method: MANUAL` and the pipeline can be re-run for that ticker without
+   re-scraping/re-extracting everything else (idempotent per-field, not per-run).
+4. If a ticker's report is generated before manual review is done, affected checks
+   report as `INCONCLUSIVE — data not available` per the algo spec, exactly as the
+   rules file requires (§1: "do not guess... mark that check INCONCLUSIVE").
+5. Track a per-adapter/per-document "extraction success rate" metric — if a particular
+   filer's PDFs consistently fall to OCR/manual (e.g., a company that files scanned
+   reports every year), flag that ticker for a standing manual-review expectation rather
+   than re-discovering it every run.
+
+### 4.5 Section-anchor library
+
+Maintain a small, versioned library of section-header patterns per note, since Annual
+Report formatting drifts year to year and filer to filer:
+
+```
+SECTION_PATTERNS = {
+  "auditor_opinion": ["INDEPENDENT AUDITOR'S REPORT", "Opinion", "Basis for Opinion"],
+  "related_party": ["Related Party Transactions", "Related Party Disclosures"],
+  "contingent_liabilities": ["Contingent Liabilities", "Contingent Liabilities and Commitments"],
+  "auditor_remuneration": ["Payment to Auditors", "Auditor's Remuneration", "Remuneration to Auditors"],
+  "legal_professional_charges": ["Legal and Professional", "Legal & Professional Charges"],
+  "kmp_changes": ["Key Managerial Personnel", "Changes in Key Managerial Personnel"],
+}
+```
+
+Fuzzy-match (edit distance or embedding similarity) against these, don't require exact
+strings — this is what keeps the extractor from breaking on every minor wording change.
+
+---
+
+## 5. Decision Engine implementation
+
+- Translate `Phase1-Algorithms.md` §3–9 directly into code — one pure function per
+  check, no I/O inside these functions (no HTTP calls, no file reads). Inputs and
+  outputs only.
+- Unit test against the 11 fixtures in `Phase1-Algorithms.md` §11 before wiring
+  anything else — this is cheap to get right early and expensive to debug once
+  scraping/PDF noise is mixed in.
+- Store `Phase1Result` as-is (JSONB column) so a report can always be regenerated from
+  stored results without re-running acquisition.
+
+---
+
+## 6. Report Generation & PDF export
+
+### 6.1 Single HTML template, two render targets
+
+Per §1's design principle, keep one Jinja2 (or equivalent) HTML template for the
+investor-facing report (applying `user.md`'s wrapping rules from `Phase1-Rules.md` §5),
+rendered two ways:
+
+- **Web view** — served directly as a report page in the app.
+- **PDF export** — the same HTML run through WeasyPrint. No separate PDF-specific
+  content to maintain; formatting differences (print CSS) only.
+
+### 6.2 Report types to support
+
+| Report | Contents | Format options |
+| :-- | :-- | :-- |
+| Single-ticker investor report | §5 worked-example style narrative (REJECT/CLEARED/HOLD), full Pass/Fail table, sourced findings, disclaimer | Web + PDF |
+| Single-ticker analyst report | The raw §4 internal working table — numbers, thresholds, citations, no prose wrapping | Web + PDF (for internal/analyst use) |
+| Batch summary matrix | One row per ticker: verdict, failing check(s) if any, date processed — a scan-list view across an uploaded sheet | Web (sortable/filterable table) + consolidated PDF (one page per ticker, or a summary table + appendix) |
+| Review-needed report | Tickers/checks stuck in manual review queue, with a direct link to resolve each | Web only (operational, not investor-facing) |
+
+### 6.3 PDF export implementation notes
+
+- Generate PDFs asynchronously (same job queue as scraping) — don't block the HTTP
+  request on WeasyPrint rendering, especially for a batch consolidated PDF across many
+  tickers.
+- Store generated PDFs in object storage keyed by `(ticker, as_of_date, report_type)`
+  and serve via signed URL — regenerate only when the underlying `Phase1Result` changes
+  (e.g., after a manual review resolution), not on every view.
+- Batch consolidated PDF should open with a one-page summary matrix (ticker → verdict)
+  before the per-ticker detail pages, so a user reviewing 50 tickers isn't forced to
+  page through everything to find the rejects.
+
+---
+
+## 7. Bulk ticker input (CSV/Excel)
+
+### 7.1 Upload contract
+
+Accept `.csv` and `.xlsx`. Required column: `ticker` (or `symbol`). Optional columns
+the app should recognize if present but never require: `company_name`,
+`bse_scrip_code`, `nse_symbol` — these help disambiguate when a ticker string alone is
+ambiguous across exchanges.
+
+### 7.2 Validation before job creation
+
+- Reject the upload with a clear per-row error list (not a single generic failure) if:
+  required column is missing, a ticker cell is empty, or duplicate tickers appear
+  (dedupe with a warning rather than hard-failing, unless the user wants strict mode).
+- Cap batch size (configurable, e.g. 200 tickers/upload) to keep scraping load and
+  review-queue volume manageable; surface the cap in the UI before upload, not after.
+- Normalize ticker casing/whitespace before matching against exchange symbol lists.
+
+### 7.3 Processing model
+
+- One job per ticker (not one giant job per file) — this is what lets a single bad
+  ticker (delisted, misspelled, PDF unreachable) fail independently without blocking
+  the other 199.
+- Batch-level record tracks `{batch_id, uploaded_by, uploaded_at, total, completed,
+  failed, in_review}` for progress display.
+- Per-ticker status visible in real time: `QUEUED → SCRAPING → EXTRACTING_PDF →
+  AWAITING_REVIEW (optional) → EVALUATING → DONE`.
+- On completion, the batch summary matrix (§6.2) is auto-generated; the consolidated
+  PDF is generated on demand (not automatically for every batch, since it may be large).
+
+---
+
+## 8. API surface (illustrative)
+
+```
+POST   /api/tickers/{ticker}/run              → enqueue a single-ticker Phase 1 job
+POST   /api/batches                           → upload CSV/Excel, enqueue N jobs
+GET    /api/batches/{batch_id}                → batch progress + per-ticker status
+GET    /api/tickers/{ticker}/report           → latest Phase1Result (JSON)
+GET    /api/tickers/{ticker}/report.pdf       → investor-facing PDF
+GET    /api/batches/{batch_id}/report.pdf     → consolidated batch PDF
+GET    /api/review-queue                      → items awaiting manual PDF review
+POST   /api/review-queue/{item_id}/resolve    → submit a human-confirmed value
+GET    /api/sources/health                    → adapter health_check() status (layout drift alerts)
+```
+
+---
+
+## 9. Database schema (core tables)
+
+```
+companies(ticker PK, company_name, bse_scrip_code, nse_symbol, company_type, last_updated)
+raw_documents(id PK, ticker FK, source, doc_type, fetch_date, storage_url, pdf_class)
+extracted_fields(id PK, ticker FK, doc_id FK, field_name, value, confidence,
+                 extraction_method, source_page, raw_snippet)
+phase1_results(id PK, ticker FK, as_of_date, verdict, checks JSONB, created_at)
+review_queue(id PK, ticker FK, check_id, field_name, best_guess_value, raw_snippet,
+             source_page, pdf_url, status, resolved_value, resolved_at, resolved_by)
+batches(id PK, uploaded_by, uploaded_at, total, completed, failed, in_review)
+batch_items(id PK, batch_id FK, ticker FK, status, phase1_result_id FK nullable)
+```
+
+---
+
+## 10. Build sequencing (phased delivery)
+
+Sequenced so each phase produces something independently testable/demoable, and later
+phases don't require re-architecting earlier ones.
+
+**Phase A — Decision Engine core**
+Implement §5 from `Phase1-Algorithms.md` as pure functions. Validate against the 11
+fixtures. No scraping, no UI — just a library with a test suite. This de-risks the
+policy logic before any I/O complexity is added.
+
+**Phase B — Manual-input single-ticker flow**
+Thin API + minimal UI where a human pastes in the `CompanyInput` fields directly (no
+scraping yet) and gets back a report (web + PDF). Validates the rendering layer and
+`user.md` wrapping end-to-end.
+
+**Phase C — Scraper adapters (Screener first)**
+Wire ScreenerAdapter for Check 2 and Check 5's numeric data (highest value, lowest PDF
+complexity — Screener's tables are structured HTML, not PDFs). Confirms the acquisition
+→ engine → report pipeline works end-to-end for the easiest data source.
+
+**Phase D — PDF extractor, tiers 1–3**
+Native-text and table extraction for Annual Report notes (Checks 1, 3, 4, 6's narrative
+and table fields). Build the section-anchor library (§4.5) against a handful of real
+sample Annual Reports across different filers to calibrate fuzzy-match thresholds.
+
+**Phase E — OCR fallback + manual review queue**
+Tier 4 (OCR) and Tier 5 (review queue + resolver UI). This is the phase that actually
+answers "what happens when a PDF is hard to parse" — build it against real PDFs that
+failed Phase D, not synthetic ones.
+
+**Phase F — Remaining adapters + cross-verification**
+BSE/NSE announcements, BSE shareholding cross-check, SEBI scan. Add the
+discrepancy-flagging logic (§3.1 point 3) between Screener and BSE pledge %.
+
+**Phase G — Bulk upload + batch reporting**
+CSV/Excel ingestion, per-ticker job fan-out, batch progress UI, consolidated PDF.
+Deliberately last because it's a thin orchestration layer over everything built in A–F
+— building it early would mean building it twice.
+
+**Phase H — Hardening**
+Rate-limit tuning against real site behavior, layout-drift alerting, caching TTL
+tuning, load testing a full batch of ~200 tickers.
+
+---
+
+## 11. Open decisions to confirm before Phase C
+
+These affect adapter/PDF work specifically and are worth a quick confirmation rather
+than a default guess, since they change what gets built:
+
+1. **Scraping legality/ToS**: Screener.in, BSE, NSE terms should be checked for
+   automated-access restrictions before this goes beyond personal/research use: some
+   sites permit reasonable personal-use scraping but restrict redistribution or
+   commercial use. Confirm intended usage scope before Phase C ships broadly.
+2. **OCR budget**: Tesseract is free/local but slower and lower-accuracy than a paid
+   OCR API (e.g., a cloud document-AI service) for dense financial tables. Decide
+   whether Phase E should default to Tesseract or budget for a paid OCR fallback for
+   `LOW`-confidence financial tables specifically.
+3. **Batch size cap** and **manual review SLA** (how long a ticker waits in
+   `AWAITING_REVIEW` before the report is generated as-is with INCONCLUSIVE checks) —
+   both are product decisions, not engineering ones.
+
+---
+
+## 12. Traceability
+
+Every module in this plan maps back to a specific section of the two existing docs —
+no scraping/PDF/report behavior here should introduce a rule not already in
+`Phase1-Rules.md`, and no Decision Engine behavior here should diverge from
+`Phase1-Algorithms.md`. If either source file changes, review §3–§6 of this plan for
+knock-on effects (a new/changed check may need a new scraper field or PDF section
+anchor).

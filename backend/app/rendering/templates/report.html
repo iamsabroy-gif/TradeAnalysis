@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Phase 1 Gatekeeper Report — {{ investor.ticker }} (Rev {{ investor.revision }})</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap');
+
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --primary: #3b82f6;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      margin: 0;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .header-block {
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+
+    .badge-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .ticker-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 32px;
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .meta-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+
+    .verdict-banner {
+      padding: 24px;
+      border-radius: 12px;
+      margin-bottom: 32px;
+      border-left: 6px solid;
+    }
+
+    .verdict-banner.success {
+      background: rgba(16, 185, 129, 0.12);
+      border-color: var(--success);
+    }
+
+    .verdict-banner.danger {
+      background: rgba(239, 68, 68, 0.12);
+      border-color: var(--danger);
+    }
+
+    .verdict-banner.warning {
+      background: rgba(245, 158, 11, 0.12);
+      border-color: var(--warning);
+    }
+
+    .verdict-badge {
+      display: inline-block;
+      padding: 6px 14px;
+      font-weight: 700;
+      font-size: 14px;
+      border-radius: 9999px;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .verdict-badge.success { background: var(--success); color: #022c22; }
+    .verdict-badge.danger { background: var(--danger); color: #fff; }
+    .verdict-badge.warning { background: var(--warning); color: #451a03; }
+
+    .headline {
+      font-size: 20px;
+      font-weight: 600;
+      margin: 0 0 10px 0;
+    }
+
+    .lead-story {
+      font-size: 15px;
+      color: #cbd5e1;
+      margin: 0;
+    }
+
+    .check-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .check-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .check-title {
+      font-size: 17px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .status-pill {
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .status-pill.success { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+    .status-pill.danger { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+    .status-pill.warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+
+    .analogy-box {
+      font-style: italic;
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 12px;
+      padding-left: 12px;
+      border-left: 3px solid var(--border);
+    }
+
+    .finding-text {
+      font-size: 14px;
+      margin-bottom: 10px;
+    }
+
+    .so-what-box {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13.5px;
+      color: #e2e8f0;
+      margin-top: 10px;
+    }
+
+    .citation-line {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 10px;
+      word-break: break-all;
+    }
+
+    .gap-warning {
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid var(--warning);
+      padding: 16px;
+      border-radius: 8px;
+      margin: 24px 0;
+      font-size: 14px;
+    }
+
+    .sebi-disclaimer {
+      margin-top: 48px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 12.5px;
+      color: var(--text-muted);
+      text-align: center;
+      font-style: italic;
+    }
+
+    @media print {
+      body {
+        background: #fff;
+        color: #000;
+        padding: 0;
+      }
+      .check-card {
+        background: #fff;
+        border: 1px solid #ccc;
+        page-break-inside: avoid;
+      }
+      .verdict-banner {
+        border: 1px solid #ccc;
+      }
+      .sebi-disclaimer {
+        color: #555;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header Block -->
+    <header class="header-block">
+      <div class="badge-bar">
+        <h1 class="ticker-title">{{ investor.ticker }}</h1>
+        <span class="verdict-badge {{ investor.badge_color }}">{{ investor.badge_label }}</span>
+      </div>
+      <div class="meta-tags">
+        <span><strong>As of Date:</strong> {{ investor.as_of_date }}</span>
+        <span>•</span>
+        <span><strong>Revision:</strong> {{ investor.revision }}</span>
+        <span>•</span>
+        <span><strong>Reporting Basis:</strong> {{ investor.data_basis_label }}</span>
+        <span>•</span>
+        <span><strong>Generated:</strong> {{ investor.generated_at }}</span>
+      </div>
+    </header>
+
+    <!-- Verdict Banner -->
+    <section class="verdict-banner {{ investor.badge_color }}">
+      <h2 class="headline">{{ investor.headline }}</h2>
+      <p class="lead-story">{{ investor.lead_story }}</p>
+    </section>
+
+    <!-- Citation gaps warning -->
+    {% if investor.citation_gaps %}
+    <div class="gap-warning">
+      <strong>⚠️ Sourcing Notice:</strong> The following fields were used to evaluate this company,
+      but were missing explicit source provenance records:
+      <code>{{ investor.citation_gaps | join(', ') }}</code>.
+    </div>
+    {% endif %}
+
+    <!-- Check Breakdown -->
+    <main>
+      <h2 style="font-size: 20px; margin-bottom: 20px;">Detailed Integrity Checks (Phase 1)</h2>
+      {% for c in investor.checks %}
+      <div class="check-card">
+        <div class="check-header">
+          <h3 class="check-title">{{ c.title }}</h3>
+          <span class="status-pill {{ c.status_badge }}">{{ c.status_label }}</span>
+        </div>
+        <div class="analogy-box">{{ c.analogy }}</div>
+        <div class="finding-text"><strong>Finding:</strong> {{ c.finding }}</div>
+        {% if c.missing_data %}
+        <div class="finding-text" style="color: var(--warning);">
+          <strong>Missing Information:</strong> {{ c.missing_data }}
+        </div>
+        {% endif %}
+        <div class="so-what-box">{{ c.so_what }}</div>
+        {% if c.citation %}
+        <div class="citation-line"><strong>Source Citation:</strong> {{ c.citation }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </main>
+
+    <!-- Mandatory Verbatim SEBI Disclaimer -->
+    <footer class="sebi-disclaimer">
+      {{ investor.sebi_disclaimer }}
+    </footer>
+  </div>
+</body>
+</html>

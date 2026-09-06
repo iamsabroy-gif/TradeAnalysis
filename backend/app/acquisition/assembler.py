@@ -1,0 +1,241 @@
+"""
+Assembler for Phase 1 Gatekeeper.
+Strictly maps to Phase1-PhaseC-Scraper-Implementation-Plan.md §6.
+Turns AdapterResult[] into a CompanyInput + provenance map, enforcing
+the §3 field coverage matrix, basis comparability, confidence floors,
+and discrepancy flagging.
+"""
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+import uuid
+
+from backend.app.models.coverage import FIELD_COVERAGE_MATRIX
+from backend.app.models.enums import (
+    Confidence,
+    ExtractionMethod,
+    ReportingBasis,
+)
+from backend.app.models.schemas import (
+    CompanyInput,
+    FieldProvenance,
+    RegulatoryActionInput,
+    ReviewQueueItem,
+)
+from .types import AdapterResult, CompanyIdentity, ExtractedField
+
+# Priority ordering for owner resolution (§6.3)
+OWNER_PRIORITY = {
+    "MANUAL": 100,
+    "WorkbookUploadAdapter": 90,
+    "PDF tier 1 (D)": 80,
+    "PDF tier 2 (D)": 75,
+    "PDF tier 2/3 (D)": 70,
+    "Screener (C)": 50,
+    "ScreenerExportAdapter": 50,
+    "ScreenerAdapter": 45,
+    "Engine": 30,
+}
+
+CONFIDENCE_RANK = {
+    Confidence.MANUAL: 5,
+    Confidence.HIGH: 4,
+    Confidence.MEDIUM: 3,
+    Confidence.LOW: 2,
+    Confidence.DERIVED: 1,
+}
+
+
+def satisfies_floor(conf: Confidence, floor_str: str) -> bool:
+    """
+    MANUAL always passes.
+    Otherwise compares against floor enum rank.
+    Phase1-PhaseC-Scraper-Implementation-Plan.md §5A.3
+    """
+    if conf == Confidence.MANUAL:
+        return True
+    floor_conf = Confidence(floor_str)
+    return CONFIDENCE_RANK[conf] >= CONFIDENCE_RANK[floor_conf]
+
+
+def assemble(
+    identity: CompanyIdentity,
+    as_of_date: str,
+    basis: ReportingBasis,
+    results: List[AdapterResult],
+    manual_overrides: Optional[Dict[str, Any]] = None,
+    uploader: Optional[str] = None,
+) -> Tuple[CompanyInput, List[ReviewQueueItem]]:
+    """
+    Assembles extracted adapter results into CompanyInput with full provenance.
+    """
+    manual_overrides = manual_overrides or {}
+    review_items: List[ReviewQueueItem] = []
+    field_candidates: Dict[str, List[Tuple[ExtractedField, str]]] = {}
+
+    # Flatten extracted fields from all adapter results
+    for res in results:
+        for f in res.fields:
+            if f.field_name not in field_candidates:
+                field_candidates[f.field_name] = []
+            field_candidates[f.field_name].append((f, res.adapter))
+
+    populated_values: Dict[str, Any] = {}
+    provenance_map: Dict[str, FieldProvenance] = {}
+
+    for field_name, candidates in field_candidates.items():
+        meta = FIELD_COVERAGE_MATRIX.get(field_name)
+        if not meta:
+            continue
+
+        # Sort candidates by owner priority
+        candidates.sort(
+            key=lambda item: (
+                OWNER_PRIORITY.get(item[1], 10),
+                CONFIDENCE_RANK.get(item[0].confidence, 0),
+            ),
+            reverse=True,
+        )
+
+        chosen_field: Optional[ExtractedField] = None
+        chosen_adapter: Optional[str] = None
+
+        # Check for discrepancy if multiple adapters supply numeric fields (e.g. pledge %)
+        if len(candidates) >= 2 and isinstance(candidates[0][0].value, (int, float)) and isinstance(candidates[1][0].value, (int, float)):
+            val1 = float(candidates[0][0].value)
+            val2 = float(candidates[1][0].value)
+            if abs(val1 - val2) > 1.0:  # > 1 percentage point gap
+                review_items.append(
+                    ReviewQueueItem(
+                        id=str(uuid.uuid4()),
+                        company_id=identity.ticker,
+                        ticker=identity.ticker,
+                        check_id=meta.get("check") or 0,
+                        field_name=field_name,
+                        best_guess_value=val1,
+                        period=candidates[0][0].period,
+                        basis=candidates[0][0].basis,
+                        raw_snippet=f"{candidates[0][1]}: {val1} vs {candidates[1][1]}: {val2}",
+                        reason=f"Discrepancy > 1pp between sources: {candidates[0][1]}={val1} vs {candidates[1][1]}={val2}",
+                    )
+                )
+
+        for ef, adapter_name in candidates:
+            # 1. Basis filter rule (§6.1)
+            if (
+                meta.get("basis_required", False)
+                and ef.basis != ReportingBasis.NOT_APPLICABLE
+                and ef.basis != basis
+            ):
+                review_items.append(
+                    ReviewQueueItem(
+                        id=str(uuid.uuid4()),
+                        company_id=identity.ticker,
+                        ticker=identity.ticker,
+                        check_id=meta.get("check") or 0,
+                        field_name=field_name,
+                        best_guess_value=ef.value,
+                        period=ef.period,
+                        basis=ef.basis,
+                        raw_snippet=ef.raw_snippet,
+                        reason=f"Mismatched basis: field is {ef.basis.value} but declared run basis is {basis.value}",
+                    )
+                )
+                continue  # drop candidate
+
+            # 2. Confidence floor check (§6.2)
+            floor_str = meta.get("confidence_floor", "HIGH")
+            if not satisfies_floor(ef.confidence, floor_str):
+                review_items.append(
+                    ReviewQueueItem(
+                        id=str(uuid.uuid4()),
+                        company_id=identity.ticker,
+                        ticker=identity.ticker,
+                        check_id=meta.get("check") or 0,
+                        field_name=field_name,
+                        best_guess_value=ef.value,
+                        period=ef.period,
+                        basis=ef.basis,
+                        raw_snippet=ef.raw_snippet,
+                        reason=f"Confidence {ef.confidence.value} below required floor {floor_str}",
+                    )
+                )
+                continue  # below floor, stays null
+
+            chosen_field = ef
+            chosen_adapter = adapter_name
+            break  # highest priority valid candidate selected
+
+        if chosen_field:
+            populated_values[field_name] = chosen_field.value
+            provenance_map[field_name] = FieldProvenance(
+                field_name=field_name,
+                source=chosen_field.source,
+                period=chosen_field.period,
+                basis=chosen_field.basis,
+                page=chosen_field.page,
+                confidence=chosen_field.confidence,
+                extraction_method=chosen_field.extraction_method,
+                raw_snippet=chosen_field.raw_snippet,
+                extracted_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+    # 6. Manual overrides win (§6.6)
+    # Derive fiscal year from as_of_date for proper period comparability
+    run_fy = "FY24"
+    if as_of_date:
+        import re
+        m = re.search(r"20(\d{2})", as_of_date)
+        if m:
+            run_fy = f"FY{m.group(1)}"
+    prior_fy = f"FY{int(run_fy[2:]) - 1}" if run_fy.startswith("FY") and run_fy[2:].isdigit() else "Prior FY"
+
+    for f_name, val in manual_overrides.items():
+        if val is not None and f_name in FIELD_COVERAGE_MATRIX:
+            populated_values[f_name] = val
+            meta = FIELD_COVERAGE_MATRIX[f_name]
+            field_period = prior_fy if f_name == "legal_fees_prior_year" else run_fy
+            provenance_map[f_name] = FieldProvenance(
+                field_name=f_name,
+                source=f"Manual Override by {uploader or 'analyst'}",
+                period=field_period,
+                basis=basis if meta.get("basis_required", False) else ReportingBasis.NOT_APPLICABLE,
+                confidence=Confidence.MANUAL,
+                extraction_method=ExtractionMethod.MANUAL,
+                extracted_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+    # Construct CompanyInput model
+    regulatory_action = populated_values.get("regulatory_action")
+    if not isinstance(regulatory_action, RegulatoryActionInput):
+        regulatory_action = RegulatoryActionInput()
+
+    company_input = CompanyInput(
+        ticker=identity.ticker,
+        as_of_date=as_of_date,
+        data_basis=basis,
+        auditor_resigned_mid_tenure_last_3y=populated_values.get("auditor_resigned_mid_tenure_last_3y"),
+        audit_opinion=populated_values.get("audit_opinion"),
+        regulatory_action=regulatory_action,
+        legal_fees=populated_values.get("legal_fees"),
+        audit_fees=populated_values.get("audit_fees"),
+        legal_fees_prior_year=populated_values.get("legal_fees_prior_year"),
+        govt_shareholding_pct=populated_values.get("govt_shareholding_pct"),
+        promoter_holding_pct_of_company=populated_values.get("promoter_holding_pct_of_company"),
+        pledged_pct_of_promoter_holding=populated_values.get("pledged_pct_of_promoter_holding"),
+        pledged_pct_history_last_4q=populated_values.get("pledged_pct_history_last_4q"),
+        pledged_pct_of_total_shares=populated_values.get("pledged_pct_of_total_shares"),
+        rpt_sales_plus_purchases=populated_values.get("rpt_sales_plus_purchases"),
+        revenue=populated_values.get("revenue"),
+        unusual_affiliate_dealings=populated_values.get("unusual_affiliate_dealings"),
+        contingent_liabilities=populated_values.get("contingent_liabilities"),
+        net_worth=populated_values.get("net_worth"),
+        cfo_last_5y=populated_values.get("cfo_last_5y"),
+        pat_last_5y=populated_values.get("pat_last_5y"),
+        cfo_changes_last_3y=populated_values.get("cfo_changes_last_3y"),
+        restatement_of_past_accounts=populated_values.get("restatement_of_past_accounts"),
+        years_of_track_record_available=populated_values.get("years_of_track_record_available"),
+        provenance=provenance_map,
+    )
+
+    return company_input, review_items
