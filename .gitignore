@@ -10,7 +10,8 @@ env/
 # Node / frontend
 node_modules/
 frontend/node_modules/
-frontend/dist/
+# frontend/dist is committed: Vercel's FastAPI runtime serves it via StaticFiles
+# and does not run a Node build step. Rebuild with `npm run build` and commit.
 
 # Vercel
 .vercel/
