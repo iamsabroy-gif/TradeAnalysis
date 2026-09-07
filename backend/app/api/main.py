@@ -32,7 +32,7 @@ from backend.app.models.enums import AuditOpinion, Confidence, ReportingBasis
 from backend.app.models.schemas import CompanyInput, Phase1Result
 from backend.app.rendering.analyst_table import render_analyst_report
 from backend.app.rendering.investor_prose import render_investor_report
-from tests.test_fixtures import make_clean_company_input
+from backend.app.fixtures import make_clean_company_input
 
 app = FastAPI(
     title="Phase 1 Gatekeeper API",
