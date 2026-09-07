@@ -27,6 +27,7 @@ from backend.app.acquisition import (
 )
 from backend.app.engine.orchestrator import run_phase1
 from backend.app.models.coverage import FIELD_COVERAGE_MATRIX
+from backend.app.persistence import get_store
 from backend.app.models.enums import AuditOpinion, Confidence, ReportingBasis
 from backend.app.models.schemas import CompanyInput, Phase1Result
 from backend.app.rendering.analyst_table import render_analyst_report
@@ -54,10 +55,9 @@ workbook_adapter = WorkbookUploadAdapter()
 registry.register(screener_adapter, enabled=True)
 registry.register(workbook_adapter, enabled=True)
 
-# In-memory store for evaluation results and inputs
-RESULTS_STORE: Dict[str, Phase1Result] = {}
-INPUTS_STORE: Dict[str, CompanyInput] = {}
-TICKER_LATEST_MAP: Dict[str, str] = {}  # ticker -> latest_result_id
+# Result store: Supabase-backed when configured (SUPABASE_URL + service key),
+# otherwise process-local in-memory storage. See backend/app/persistence.
+store = get_store()
 
 # Template environment
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "rendering" / "templates"
@@ -179,15 +179,20 @@ def run_ticker_pipeline(ticker: str, req: RunPipelineRequest):
 
     # Check for prior result if re-evaluating
     prior: Optional[Phase1Result] = None
-    if req.prior_result_id and req.prior_result_id in RESULTS_STORE:
-        prior = RESULTS_STORE[req.prior_result_id]
+    if req.prior_result_id:
+        prior_record = store.get_result(req.prior_result_id)
+        if prior_record:
+            prior = Phase1Result.model_validate(prior_record["result"])
 
     result = run_phase1(company_input, prior=prior)
 
-    # Store
-    RESULTS_STORE[result.result_id] = result
-    INPUTS_STORE[result.result_id] = company_input
-    TICKER_LATEST_MAP[clean_ticker] = result.result_id
+    # Persist
+    store.save_result(
+        result.result_id,
+        clean_ticker,
+        result.model_dump(mode="json"),
+        company_input.model_dump(mode="json"),
+    )
 
     # Compute which check-bearing fields are still empty
     check_fields = [
@@ -303,16 +308,21 @@ def evaluate_ticker(payload: EvaluationRequest):
     Handles versioning if prior_result_id is provided.
     """
     prior: Optional[Phase1Result] = None
-    if payload.prior_result_id and payload.prior_result_id in RESULTS_STORE:
-        prior = RESULTS_STORE[payload.prior_result_id]
+    if payload.prior_result_id:
+        prior_record = store.get_result(payload.prior_result_id)
+        if prior_record:
+            prior = Phase1Result.model_validate(prior_record["result"])
 
     input_data = CompanyInput(**payload.model_dump(exclude={"prior_result_id"}))
     result = run_phase1(input_data, prior=prior)
 
-    # Persist in-memory
-    RESULTS_STORE[result.result_id] = result
-    INPUTS_STORE[result.result_id] = input_data
-    TICKER_LATEST_MAP[result.ticker] = result.result_id
+    # Persist
+    store.save_result(
+        result.result_id,
+        result.ticker,
+        result.model_dump(mode="json"),
+        input_data.model_dump(mode="json"),
+    )
 
     investor_report = render_investor_report(result)
     analyst_report = render_analyst_report(result, input_data)
@@ -327,10 +337,15 @@ def evaluate_ticker(payload: EvaluationRequest):
 @app.get("/api/results/{result_id}")
 def get_result(result_id: str):
     """Fetches a specific evaluation revision."""
-    if result_id not in RESULTS_STORE:
+    record = store.get_result(result_id)
+    if record is None:
         raise HTTPException(status_code=404, detail="Result not found")
-    res = RESULTS_STORE[result_id]
-    inp = INPUTS_STORE.get(result_id, CompanyInput(ticker=res.ticker, as_of_date=res.as_of_date))
+    res = Phase1Result.model_validate(record["result"])
+    inp = (
+        CompanyInput.model_validate(record["company_input"])
+        if record.get("company_input")
+        else CompanyInput(ticker=res.ticker, as_of_date=res.as_of_date)
+    )
     return {
         "result": res.model_dump(),
         "investor_report": render_investor_report(res),
@@ -341,9 +356,9 @@ def get_result(result_id: str):
 @app.get("/api/tickers/{ticker}/latest")
 def get_latest_ticker_result(ticker: str):
     """Fetches the latest evaluation for a ticker."""
-    if ticker not in TICKER_LATEST_MAP:
+    latest_id = store.latest_result_id_for_ticker(ticker)
+    if latest_id is None:
         raise HTTPException(status_code=404, detail=f"No results found for ticker {ticker}")
-    latest_id = TICKER_LATEST_MAP[ticker]
     return get_result(latest_id)
 
 
@@ -352,10 +367,15 @@ def render_report_html(result_id: str):
     """
     Renders unified HTML report for web view and PDF printing.
     """
-    if result_id not in RESULTS_STORE:
+    record = store.get_result(result_id)
+    if record is None:
         raise HTTPException(status_code=404, detail="Result not found")
-    res = RESULTS_STORE[result_id]
-    inp = INPUTS_STORE.get(result_id, CompanyInput(ticker=res.ticker, as_of_date=res.as_of_date))
+    res = Phase1Result.model_validate(record["result"])
+    inp = (
+        CompanyInput.model_validate(record["company_input"])
+        if record.get("company_input")
+        else CompanyInput(ticker=res.ticker, as_of_date=res.as_of_date)
+    )
 
     investor_data = render_investor_report(res)
     analyst_data = render_analyst_report(res, inp)
