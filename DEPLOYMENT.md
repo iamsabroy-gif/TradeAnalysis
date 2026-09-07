@@ -44,14 +44,39 @@ Run these from the repository root (where `vercel.json` lives).
 - App UI: `https://<your-project>.vercel.app/`
 - API health: `https://<your-project>.vercel.app/api/health` → `{"status":"ok",...}`
 
+## Persistence (Supabase)
+
+Evaluation results are persisted through a small store abstraction in
+`backend/app/persistence/`:
+
+- When `SUPABASE_URL` and a service key are set in the environment, the backend
+  uses **Supabase Postgres** (`SupabaseResultStore`, over the REST API) — durable
+  across serverless invocations.
+- Otherwise it falls back to a **process-local in-memory store** — used for local
+  dev and tests, and (as a degraded mode) if Supabase is unreachable.
+
+### Required environment variables (set these in Vercel → Project → Settings → Environment Variables)
+
+| Variable | Value |
+| --- | --- |
+| `SUPABASE_URL` | `https://gzuibxcoeevnmnvbezpm.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | The **service_role** secret from Supabase → Project Settings → API Keys. Server-side only — never expose it to the frontend. |
+
+The `phase1_results` table uses Row Level Security with no public policies, so the
+data is reachable only with the service role key (which bypasses RLS). The anon /
+publishable key cannot read it. The `SUPABASE_URL` above points at the
+`iamsabroy@gmail.com's Project` Supabase project; the table was created by
+`supabase/migrations/0001_phase1_results.sql`.
+
+For local development, export the same two variables in your shell before
+starting `uvicorn`; leave them unset to use in-memory storage.
+
 ## Known limitations on serverless
 
-- **In-memory stores are not durable.** `RESULTS_STORE`, `INPUTS_STORE`, and
-  `TICKER_LATEST_MAP` in `main.py` live in process memory. On Vercel each
-  invocation may hit a fresh/cold instance, so a `result_id` saved by one
-  request may not be found by a later `GET /api/results/{id}`. For durable
-  history, back these with an external store (e.g. Vercel KV / Postgres,
-  Supabase, Redis). This does not affect single-request flows like
-  `/api/evaluate` or `/api/tickers/{ticker}/run`, which return the report inline.
 - **Screener scraping** (`/api/tickers/{ticker}/run`) makes outbound HTTP calls;
   keep an eye on the 60s function timeout set in `vercel.json` (`maxDuration`).
+- With Supabase configured, evaluation history persists. Without it (no env
+  vars), a `result_id` saved by one request may not be found by a later
+  `GET /api/results/{id}` because each serverless invocation can be a fresh
+  instance. Single-request flows (`/api/evaluate`, `/api/tickers/{ticker}/run`)
+  return the report inline and are unaffected either way.
