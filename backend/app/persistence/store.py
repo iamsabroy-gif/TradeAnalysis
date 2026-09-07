@@ -68,6 +68,72 @@ class InMemoryResultStore:
         return self._ticker_latest.get(ticker)
 
 
+class ResilientResultStore:
+    """Wraps a primary store so a persistence failure degrades instead of raising.
+
+    Every call is delegated to the primary store (e.g. Supabase). If it raises —
+    the table is missing, credentials are wrong, the network is down — the error
+    is logged and the operation is served from a process-local in-memory fallback
+    instead. This keeps an evaluation request succeeding (the report is returned
+    inline anyway) even when durable storage is misconfigured or unreachable.
+
+    Writes that fail on the primary are mirrored into the fallback, so results
+    saved during a degraded window remain retrievable within the same warm
+    process (Render runs a persistent process, unlike per-request serverless).
+    """
+
+    def __init__(self, primary: ResultStore) -> None:
+        self._primary = primary
+        self._fallback = InMemoryResultStore()
+        self._warned = False
+
+    def _warn_once(self, op: str) -> None:
+        if not self._warned:
+            logger.exception(
+                "Primary result store failed on %s; serving from in-memory "
+                "fallback. Results will not be durable until persistence is "
+                "fixed (check SUPABASE_URL / service key and that the "
+                "phase1_results table exists).",
+                op,
+            )
+            self._warned = True
+        else:
+            logger.warning("Primary result store failed on %s; using fallback.", op)
+
+    def save_result(
+        self,
+        result_id: str,
+        ticker: str,
+        result: Dict[str, Any],
+        company_input: Dict[str, Any],
+    ) -> None:
+        try:
+            self._primary.save_result(result_id, ticker, result, company_input)
+        except Exception:
+            self._warn_once("save_result")
+            self._fallback.save_result(result_id, ticker, result, company_input)
+
+    def get_result(self, result_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            record = self._primary.get_result(result_id)
+        except Exception:
+            self._warn_once("get_result")
+            record = None
+        if record is None:
+            return self._fallback.get_result(result_id)
+        return record
+
+    def latest_result_id_for_ticker(self, ticker: str) -> Optional[str]:
+        try:
+            latest = self._primary.latest_result_id_for_ticker(ticker)
+        except Exception:
+            self._warn_once("latest_result_id_for_ticker")
+            latest = None
+        if latest is None:
+            return self._fallback.latest_result_id_for_ticker(ticker)
+        return latest
+
+
 # --- Store selection ---------------------------------------------------------
 
 _STORE_SINGLETON: Optional[ResultStore] = None
@@ -86,7 +152,9 @@ def _build_store() -> ResultStore:
 
             store = SupabaseResultStore(url, key)
             logger.info("Using SupabaseResultStore for result persistence.")
-            return store
+            # Wrap so a failing read/write (missing table, bad key, network)
+            # degrades to in-memory instead of 500-ing the request.
+            return ResilientResultStore(store)
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception(
                 "Failed to initialise SupabaseResultStore; "
