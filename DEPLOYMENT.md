@@ -1,3 +1,56 @@
+# Deploying TradeAnalysis
+
+Two supported free-tier targets:
+
+- **[Render](#deploying-to-render-free-tier)** — a single persistent web service
+  (no serverless function timeout; best for the screener scraping flow).
+- **[Vercel](#deploying-tradeanalysis-to-vercel)** — serverless, one project.
+
+---
+
+# Deploying to Render (free tier)
+
+Render runs the FastAPI app as a **single persistent Web Service** on the free
+plan. FastAPI serves the API at `/api/*` and the pre-built Vite frontend
+(`frontend/dist/`) at `/` from the same domain, so there are no CORS concerns and
+no frontend changes. Unlike serverless, the process stays warm while in use and
+long scrapes aren't bound by a function timeout.
+
+Everything is declared in [`render.yaml`](render.yaml) (a Render Blueprint).
+
+## Deploy via the Render dashboard (recommended)
+
+1. Push this branch to GitHub.
+2. Go to <https://dashboard.render.com/> → **New** → **Blueprint**.
+3. Connect the `iamsabroy-gif/tradeanalysis` repository. Render reads
+   `render.yaml` and proposes a free Web Service named `tradeanalysis`:
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `uvicorn backend.app.api.main:app --host 0.0.0.0 --port $PORT`
+   - Health Check Path: `/api/health`
+4. (Optional persistence) Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+   in the service's **Environment** tab — see
+   [Persistence](#persistence-supabase) below. Leave them unset to run with
+   in-memory storage.
+5. Click **Apply** / **Create**. The first build installs Python deps and starts
+   uvicorn.
+
+## Verifying
+
+- App UI: `https://tradeanalysis.onrender.com/` (your service's URL)
+- API health: `https://<service>.onrender.com/api/health` → `{"status":"ok",...}`
+
+## Notes and free-tier limits
+
+- **Idle sleep:** free Web Services spin down after ~15 minutes of no traffic and
+  cold-start (~30–60s) on the next request. Paid plans remove this.
+- **No Node build step:** `frontend/dist/` is committed, so the Render build is
+  Python-only. If you change frontend source, rebuild and commit:
+  `cd frontend && npm install && npm run build`.
+- **Persistence:** without Supabase env vars the in-memory store resets on every
+  restart/sleep; set the two Supabase variables for durable results.
+
+---
+
 # Deploying TradeAnalysis to Vercel
 
 This project deploys as a **single Vercel project**:
