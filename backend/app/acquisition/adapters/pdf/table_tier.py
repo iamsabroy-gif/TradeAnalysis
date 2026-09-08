@@ -106,7 +106,7 @@ def extract_note_fields_from_pdf(
                                             source=source_filename,
                                             period=period,
                                             basis=basis,
-                                            source_page=page_idx + 1,
+                                            page=page_idx + 1,
                                             raw_snippet=f"{row[0]}: {val}",
                                             document_id=document_id,
                                         )
@@ -140,7 +140,7 @@ def extract_note_fields_from_pdf(
                                             source=source_filename,
                                             period=period,
                                             basis=basis,
-                                            source_page=page_idx + 1,
+                                            page=page_idx + 1,
                                             raw_snippet=f"{row[0]}: {val}",
                                             document_id=document_id,
                                         )
@@ -180,7 +180,7 @@ def extract_note_fields_from_pdf(
                                         source=source_filename,
                                         period=curr_period if curr_period != "Col1" else (doc_fy or "FY24"),
                                         basis=basis,
-                                        source_page=page_idx + 1,
+                                        page=page_idx + 1,
                                         raw_snippet=f"Legal fees: {curr_val}",
                                         document_id=document_id,
                                     )
@@ -197,7 +197,7 @@ def extract_note_fields_from_pdf(
                                             source=source_filename,
                                             period=prior_period,
                                             basis=basis,
-                                            source_page=page_idx + 1,
+                                            page=page_idx + 1,
                                             raw_snippet=f"Legal fees prior year: {prior_val}",
                                             document_id=document_id,
                                         )
@@ -229,7 +229,7 @@ def extract_note_fields_from_pdf(
                                             source=source_filename,
                                             period=period,
                                             basis=basis,
-                                            source_page=page_idx + 1,
+                                            page=page_idx + 1,
                                             raw_snippet=f"RPT {row[0]}: {val}",
                                             document_id=document_id,
                                         )

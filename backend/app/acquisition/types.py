@@ -31,6 +31,14 @@ class ExtractedField:
     raw_snippet: str
     page: Optional[int] = None
     document_id: Optional[str] = None
+    source_page: Optional[int] = None
+
+    def __post_init__(self):
+        if self.page is None and self.source_page is not None:
+            object.__setattr__(self, "page", self.source_page)
+        elif self.source_page is None and self.page is not None:
+            object.__setattr__(self, "source_page", self.page)
+
 
 
 @dataclass

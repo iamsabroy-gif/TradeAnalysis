@@ -232,3 +232,25 @@ def test_api_documents_endpoints():
     resp_del = client.delete(f"/api/tickers/APITEST/documents/{doc_id}")
     assert resp_del.status_code == 200
     assert resp_del.json()["status"] == "deleted"
+
+
+def test_tier2_note_table_extraction(tmp_path: Path):
+    from backend.app.acquisition.adapters.pdf.table_tier import extract_note_fields_from_pdf
+
+    note_text = (
+        "Note 28: Other Expenses\n"
+        "Payment to Auditors:\n"
+        "Statutory Audit Fee: 25.5 Cr\n"
+    )
+    pdf_bytes = create_mock_pdf_bytes(note_text)
+    pdf_file = tmp_path / "mock_notes.pdf"
+    pdf_file.write_bytes(pdf_bytes)
+
+    fields = extract_note_fields_from_pdf(
+        pdf_path=pdf_file,
+        source_filename="mock_notes.pdf",
+        doc_fy="FY24",
+        basis=ReportingBasis.CONSOLIDATED,
+    )
+    assert isinstance(fields, list)
+
