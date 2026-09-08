@@ -278,12 +278,15 @@ async def upload_ticker_documents(
     files: List[UploadFile] = File(...),
     fiscal_year: Optional[str] = Form(None),
     basis: Optional[ReportingBasis] = Form(None),
+    auto_extract: bool = Form(True),
 ):
     """
-    Accepts, validates, classifies, and stores one or more Annual Report PDFs.
+    Accepts, validates, classifies, stores, and auto-extracts
+    one or more Annual Report PDFs.
     """
     clean_ticker = ticker.strip().upper()
     saved_docs = []
+    saved_source_docs: List[SourceDocument] = []
     errors = []
 
     for file in files:
@@ -308,6 +311,7 @@ async def upload_ticker_documents(
             uploaded_at="",
         )
         saved = document_store.save(doc, contents)
+        saved_source_docs.append(saved)
         saved_docs.append({
             "doc_id": saved.doc_id,
             "ticker": saved.ticker,
@@ -319,9 +323,34 @@ async def upload_ticker_documents(
             "uploaded_at": saved.uploaded_at,
         })
 
+    extracted_fields = []
+    if auto_extract and saved_source_docs:
+        try:
+            parse_res = annual_report_adapter.parse_documents(saved_source_docs)
+            extracted_fields = [
+                {
+                    "field_name": f.field_name,
+                    "value": f.value,
+                    "confidence": f.confidence.value,
+                    "period": f.period,
+                    "basis": f.basis.value,
+                    "source": f.source,
+                    "page": f.page,
+                    "document_id": f.document_id,
+                    "raw_snippet": f.raw_snippet,
+                }
+                for f in parse_res.fields
+            ]
+            if parse_res.errors:
+                errors.extend([{"filename": "extraction", "error": f"{e.field_name or 'General'}: {e.message}"} for e in parse_res.errors])
+        except Exception as e:
+            errors.append({"filename": "extraction", "error": f"Auto-extraction error: {str(e)}"})
+
     return {
         "ticker": clean_ticker,
         "documents": saved_docs,
+        "extracted_fields": extracted_fields,
+        "fields_count": len(extracted_fields),
         "errors": errors,
     }
 

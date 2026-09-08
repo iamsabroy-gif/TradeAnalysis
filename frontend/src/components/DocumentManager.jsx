@@ -74,6 +74,7 @@ export default function DocumentManager({
 
     setLoading(true);
     try {
+      setStatusMsg(`Uploading and auto-extracting note fields from ${fileList.length} report(s)...`);
       const res = await fetch(`/api/tickers/${cleanTicker}/documents`, {
         method: 'POST',
         body: uploadForm,
@@ -86,11 +87,51 @@ export default function DocumentManager({
 
       const data = await res.json();
       if (data.errors && data.errors.length > 0) {
-        setError(`Upload Warnings: ${data.errors.map((e) => `${e.filename}: ${e.error}`).join('; ')}`);
-      } else {
-        setStatusMsg(`Successfully uploaded ${data.documents.length} Annual Report document(s) for ${cleanTicker}.`);
+        setError(`Upload/Extraction Warnings: ${data.errors.map((e) => `${e.filename}: ${e.error}`).join('; ')}`);
       }
+
       refreshDocuments();
+
+      if (data.extracted_fields && data.extracted_fields.length > 0) {
+        setExtractionSummary({
+          ticker: cleanTicker,
+          documents_count: data.documents ? data.documents.length : 1,
+          fields_count: data.extracted_fields.length,
+          errors_count: 0,
+          errors: [],
+          fields: data.extracted_fields,
+        });
+
+        setFormData((prev) => {
+          const updated = { ...(prev || {}) };
+          const prov = { ...(updated.provenance || {}) };
+
+          data.extracted_fields.forEach((f) => {
+            updated[f.field_name] = f.value;
+            prov[f.field_name] = {
+              field_name: f.field_name,
+              source: f.source,
+              period: f.period,
+              basis: f.basis,
+              confidence: f.confidence,
+              page: f.page,
+              document_id: f.document_id,
+            };
+          });
+
+          updated.provenance = prov;
+          return updated;
+        });
+
+        setStatusMsg(
+          `Successfully uploaded and auto-extracted ${data.extracted_fields.length} field(s) with page citations!`
+        );
+      } else {
+        setStatusMsg(
+          `Uploaded ${data.documents ? data.documents.length : 1} report(s). 0 structured note fields could be auto-extracted. You can review or enter values manually below.`
+        );
+      }
+      refreshReviewQueue();
     } catch (err) {
       setError(`PDF Upload Error: ${err.message}`);
     } finally {

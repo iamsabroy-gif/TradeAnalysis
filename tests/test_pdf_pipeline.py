@@ -200,6 +200,8 @@ def test_api_documents_endpoints():
     data = resp.json()
     assert data["ticker"] == "APITEST"
     assert len(data["documents"]) == 1
+    assert data["fields_count"] >= 1
+    assert any(f["field_name"] == "audit_opinion" for f in data["extracted_fields"])
     doc_id = data["documents"][0]["doc_id"]
 
     # 2. List documents

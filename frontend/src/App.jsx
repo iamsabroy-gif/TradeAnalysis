@@ -15,12 +15,12 @@ import {
   HelpCircle,
   Database
 } from 'lucide-react';
-import InvestorView from './components/InvestorView';
-import AnalystView from './components/AnalystView';
-import CoverageModal from './components/CoverageModal';
-import ProvenanceChip from './components/ProvenanceChip';
-import UploadValidationModal from './components/UploadValidationModal';
-import DocumentManager from './components/DocumentManager';
+import InvestorView from './components/InvestorView.jsx';
+import AnalystView from './components/AnalystView.jsx';
+import CoverageModal from './components/CoverageModal.jsx';
+import ProvenanceChip from './components/ProvenanceChip.jsx';
+import UploadValidationModal from './components/UploadValidationModal.jsx';
+import DocumentManager from './components/DocumentManager.jsx';
 
 export default function App() {
   const [fixtures, setFixtures] = useState([]);
