@@ -1,5 +1,10 @@
 {
-  "venvPath": ".",
+  "venvPath": "/Users/sabyasachiroy/projects/Learning/Equity summary/Iteration#1",
   "venv": ".venv",
-  "extraPaths": ["."]
+  "extraPaths": [
+    "/Users/sabyasachiroy/projects/Learning/Equity summary/Iteration#1",
+    "/Users/sabyasachiroy/projects/Learning/Equity summary/Iteration#1/.venv/lib/python3.11/site-packages"
+  ]
 }
+
+

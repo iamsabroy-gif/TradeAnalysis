@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+# frontend/dist is committed: Vercel's FastAPI runtime serves it via StaticFiles
+# and does not run a Node build step. Rebuild with `npm run build` and commit.
+
+# Vercel
+.vercel/
+
+# Local caches / runtime data
+var/cache/
+
+# Editor / OS
+.DS_Store
