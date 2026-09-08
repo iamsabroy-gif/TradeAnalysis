@@ -6,7 +6,7 @@ Strictly maps to Phase1-PhaseC-Scraper-Implementation-Plan.md §3.1 & §3.3.
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, List, Optional
-from backend.app.models.enums import Confidence, ExtractionMethod, ReportingBasis
+from backend.app.models.enums import Confidence, ExtractionMethod, PdfClass, ReportingBasis
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,21 @@ class ExtractedField:
     basis: ReportingBasis
     raw_snippet: str
     page: Optional[int] = None
+    document_id: Optional[str] = None
+
+
+@dataclass
+class SourceDocument:
+    doc_id: str
+    ticker: str
+    filename: str
+    fiscal_year: Optional[str]
+    basis: ReportingBasis
+    pdf_class: PdfClass
+    page_count: int
+    stored_path: str
+    uploaded_at: str
+    uploader: Optional[str] = None
 
 
 @dataclass(frozen=True)

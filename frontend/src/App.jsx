@@ -20,6 +20,7 @@ import AnalystView from './components/AnalystView';
 import CoverageModal from './components/CoverageModal';
 import ProvenanceChip from './components/ProvenanceChip';
 import UploadValidationModal from './components/UploadValidationModal';
+import DocumentManager from './components/DocumentManager';
 
 export default function App() {
   const [fixtures, setFixtures] = useState([]);
@@ -121,10 +122,14 @@ export default function App() {
       });
       setPriorResultId(data.result.result_id);
 
-      const emptyCount = data.empty_fields ? data.empty_fields.length : 0;
-      setStatusMsg(
-        `Successfully scraped Screener.in for ${ticker}! Extracted automated fields. (${emptyCount} Phase D fields awaiting PDF/Workbook input).`
-      );
+      if (data.adapter_errors && data.adapter_errors.length > 0) {
+        setError(`Screener Warning: ${data.adapter_errors.join('; ')}`);
+      } else {
+        const emptyCount = data.empty_fields ? data.empty_fields.length : 0;
+        setStatusMsg(
+          `Successfully scraped Screener.in for ${ticker}! Extracted automated fields. (${emptyCount} Phase D fields awaiting PDF/Workbook input).`
+        );
+      }
     } catch (err) {
       setError(`Screener Fetch Error: ${err.message}`);
     } finally {
@@ -415,6 +420,15 @@ export default function App() {
                 </span>
               </div>
             </div>
+
+            {/* Annual Report PDFs Manager (Phase D Multi-PDF Ingestion) */}
+            <DocumentManager
+              ticker={formData.ticker}
+              formData={formData}
+              setFormData={setFormData}
+              setStatusMsg={setStatusMsg}
+              setError={setError}
+            />
 
             {/* Status Notification Banner */}
             {statusMsg && (

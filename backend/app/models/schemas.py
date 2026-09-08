@@ -30,6 +30,7 @@ class FieldProvenance(BaseModel):
     extraction_method: Optional[ExtractionMethod] = None
     raw_snippet: Optional[str] = None
     extracted_at: Optional[str] = None
+    document_id: Optional[str] = None
 
 
 class RegulatoryActionInput(BaseModel):

@@ -76,7 +76,12 @@ def parse_screener_html(
             row_label = tds[0].get_text(strip=True).lower()
             vals = [td.get_text(strip=True) for td in tds[1:]]
             if vals:
-                table_data[row_label] = (headers[1:] if len(headers) > 1 else [], vals)
+                hdrs = headers[1:] if len(headers) > 1 else []
+                # Strip trailing TTM column if present so only closed fiscal years remain
+                if hdrs and hdrs[-1].strip().upper() == "TTM":
+                    hdrs = hdrs[:-1]
+                    vals = vals[:-1] if len(vals) > len(hdrs) else vals
+                table_data[row_label] = (hdrs, vals)
 
     # 1A. CFO row: Cash from Operating Activity
     cfo_headers = []
@@ -98,21 +103,36 @@ def parse_screener_html(
 
     # Structural assertion on Cash Flow & PAT
     if cfo_row is not None and pat_row is not None:
-        if len(cfo_row) < 5 or len(pat_row) < 5:
+        # If one table has >= 5 years but the other has fewer, layout drift / column drop occurred
+        if (len(cfo_row) < 5 and len(pat_row) >= 5) or (len(pat_row) < 5 and len(cfo_row) >= 5):
             raise LayoutChangedError(
                 f"Expected >= 5 fiscal years in Cash Flow & P&L tables; found {len(cfo_row)} and {len(pat_row)}"
             )
+        if len(cfo_row) < 1 or len(pat_row) < 1:
+            raise LayoutChangedError("Expected >= 1 fiscal year in Cash Flow & P&L tables")
+        if len(cfo_row) < 5 and len(cfo_row) != len(pat_row):
+            raise LayoutChangedError(
+                f"Cash Flow and P&L table rows have mismatched column counts: {len(cfo_row)} vs {len(pat_row)}"
+            )
 
-        cfo_nums = [parse_clean_number(v) for v in cfo_row[-5:]]
-        pat_nums = [parse_clean_number(v) for v in pat_row[-5:]]
+        take_n = min(5, len(cfo_row), len(pat_row))
+        # Ensure column headers align before taking the series
+        if cfo_headers and pat_headers and len(cfo_headers) >= take_n and len(pat_headers) >= take_n:
+            if cfo_headers[-take_n:] != pat_headers[-take_n:]:
+                raise LayoutChangedError(
+                    f"Cash Flow and P&L table headers do not align: {cfo_headers[-take_n:]} vs {pat_headers[-take_n:]}"
+                )
+
+        cfo_nums = [parse_clean_number(v) for v in cfo_row[-take_n:]]
+        pat_nums = [parse_clean_number(v) for v in pat_row[-take_n:]]
 
         if any(v is None for v in cfo_nums) or any(v is None for v in pat_nums):
-            raise LayoutChangedError("Non-numeric entries found in 5-year CFO or PAT series")
+            raise LayoutChangedError("Non-numeric entries found in CFO or PAT series")
 
         # Period resolution from headers
-        period_span = "FY20-FY24"
-        if cfo_headers and len(cfo_headers) >= 5:
-            period_span = f"{cfo_headers[-5]}-{cfo_headers[-1]}"
+        period_span = f"FY{take_n}"
+        if cfo_headers and len(cfo_headers) >= take_n:
+            period_span = f"{cfo_headers[-take_n]}-{cfo_headers[-1]}"
 
         fields.append(
             ExtractedField(
@@ -141,7 +161,7 @@ def parse_screener_html(
         )
 
         # Count track record from length of financial years
-        years_available = len(cfo_row)
+        years_available = min(len(cfo_row), len(pat_row))
         if years_available > 0:
             fields.append(
                 ExtractedField(

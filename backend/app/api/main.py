@@ -17,17 +17,23 @@ from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel
 
 from backend.app.acquisition import (
+    AnnualReportAdapter,
     CompanyIdentity,
     ScreenerAdapter,
+    SourceDocument,
     WorkbookUploadAdapter,
     assemble,
+    document_store,
     generate_workbook_template_bytes,
     registry,
     validate_and_hash_upload,
+    validate_upload,
 )
+from backend.app.acquisition.adapters.pdf.classify import classify_pdf
+from backend.app.acquisition.review.store import review_store
 from backend.app.engine.orchestrator import run_phase1
 from backend.app.models.coverage import FIELD_COVERAGE_MATRIX
-from backend.app.models.enums import AuditOpinion, Confidence, ReportingBasis
+from backend.app.models.enums import AuditOpinion, Confidence, PdfClass, ReportingBasis
 from backend.app.models.schemas import CompanyInput, Phase1Result
 from backend.app.rendering.analyst_table import render_analyst_report
 from backend.app.rendering.investor_prose import render_investor_report
@@ -51,8 +57,10 @@ app.add_middleware(
 # Register default adapters in registry
 screener_adapter = ScreenerAdapter()
 workbook_adapter = WorkbookUploadAdapter()
+annual_report_adapter = AnnualReportAdapter()
 registry.register(screener_adapter, enabled=True)
 registry.register(workbook_adapter, enabled=True)
+registry.register(annual_report_adapter, enabled=True)
 
 # In-memory store for evaluation results and inputs
 RESULTS_STORE: Dict[str, Phase1Result] = {}
@@ -73,6 +81,22 @@ class RunPipelineRequest(BaseModel):
     as_of_date: str = "2024-03-31"
     manual_overrides: Optional[Dict[str, Any]] = None
     prior_result_id: Optional[str] = None
+    document_ids: Optional[List[str]] = None
+
+
+class UpdateDocumentMetadataRequest(BaseModel):
+    fiscal_year: Optional[str] = None
+    basis: Optional[ReportingBasis] = None
+
+
+class ExtractDocumentsRequest(BaseModel):
+    document_ids: Optional[List[str]] = None
+    basis: ReportingBasis = ReportingBasis.CONSOLIDATED
+
+
+class ResolveReviewRequest(BaseModel):
+    resolved_value: Any
+    reviewer: str = "analyst"
 
 
 @app.get("/api/health")
@@ -158,15 +182,32 @@ def run_ticker_pipeline(ticker: str, req: RunPipelineRequest):
     )
 
     adapter_results = []
+    adapter_errors = []
     # If ScreenerAdapter is enabled, fetch and parse
     if registry.is_enabled("ScreenerAdapter"):
         try:
             pages = screener_adapter.fetch(ident, basis=req.basis)
             parsed_res = screener_adapter.parse(pages)
             adapter_results.append(parsed_res)
+            if parsed_res.errors:
+                adapter_errors.extend([f"{e.field_name}: {e.message}" for e in parsed_res.errors])
         except Exception as e:
             # Degrades gracefully; does not crash pipeline
-            pass
+            adapter_errors.append(f"Screener acquisition failed: {str(e)}")
+
+    # If AnnualReportAdapter is enabled, extract from uploaded PDFs
+    if registry.is_enabled("AnnualReportAdapter"):
+        try:
+            docs = document_store.list_for_ticker(clean_ticker)
+            if req.document_ids:
+                docs = [d for d in docs if d.doc_id in req.document_ids]
+            if docs:
+                pdf_res = annual_report_adapter.parse_documents(docs)
+                adapter_results.append(pdf_res)
+                if pdf_res.errors:
+                    adapter_errors.extend([f"{e.field_name}: {e.message}" for e in pdf_res.errors])
+        except Exception as e:
+            adapter_errors.append(f"PDF Annual Report extraction failed: {str(e)}")
 
     # Assemble CompanyInput
     company_input, review_items = assemble(
@@ -176,6 +217,10 @@ def run_ticker_pipeline(ticker: str, req: RunPipelineRequest):
         results=adapter_results,
         manual_overrides=req.manual_overrides,
     )
+
+    # Persist review queue items
+    if review_items:
+        review_store.add_items(review_items)
 
     # Check for prior result if re-evaluating
     prior: Optional[Phase1Result] = None
@@ -218,7 +263,170 @@ def run_ticker_pipeline(ticker: str, req: RunPipelineRequest):
         "review_items": [item.model_dump() for item in review_items],
         "empty_fields": empty_fields,
         "company_input": company_input.model_dump(),
+        "adapter_errors": adapter_errors,
     }
+
+
+@app.post("/api/tickers/{ticker}/documents")
+async def upload_ticker_documents(
+    ticker: str,
+    files: List[UploadFile] = File(...),
+    fiscal_year: Optional[str] = Form(None),
+    basis: Optional[ReportingBasis] = Form(None),
+):
+    """
+    Accepts, validates, classifies, and stores one or more Annual Report PDFs.
+    """
+    clean_ticker = ticker.strip().upper()
+    saved_docs = []
+    errors = []
+
+    for file in files:
+        contents = await file.read()
+        try:
+            safe_name, content_hash = validate_upload(file.filename or "report.pdf", contents)
+        except Exception as e:
+            errors.append({"filename": file.filename, "error": str(e)})
+            continue
+
+        pdf_class, page_count, detected_fy = classify_pdf(contents)
+        doc_fy = fiscal_year or detected_fy
+        doc = SourceDocument(
+            doc_id=content_hash[:16],
+            ticker=clean_ticker,
+            filename=safe_name,
+            fiscal_year=doc_fy,
+            basis=basis or ReportingBasis.CONSOLIDATED,
+            pdf_class=pdf_class,
+            page_count=page_count,
+            stored_path="",
+            uploaded_at="",
+        )
+        saved = document_store.save(doc, contents)
+        saved_docs.append({
+            "doc_id": saved.doc_id,
+            "ticker": saved.ticker,
+            "filename": saved.filename,
+            "fiscal_year": saved.fiscal_year,
+            "basis": saved.basis.value if isinstance(saved.basis, ReportingBasis) else saved.basis,
+            "pdf_class": saved.pdf_class.value if isinstance(saved.pdf_class, PdfClass) else saved.pdf_class,
+            "page_count": saved.page_count,
+            "uploaded_at": saved.uploaded_at,
+        })
+
+    return {
+        "ticker": clean_ticker,
+        "documents": saved_docs,
+        "errors": errors,
+    }
+
+
+@app.get("/api/tickers/{ticker}/documents")
+def list_ticker_documents(ticker: str):
+    """Lists all stored Annual Report documents for a ticker."""
+    clean_ticker = ticker.strip().upper()
+    docs = document_store.list_for_ticker(clean_ticker)
+    return {
+        "ticker": clean_ticker,
+        "documents": [
+            {
+                "doc_id": d.doc_id,
+                "ticker": d.ticker,
+                "filename": d.filename,
+                "fiscal_year": d.fiscal_year,
+                "basis": d.basis.value if isinstance(d.basis, ReportingBasis) else d.basis,
+                "pdf_class": d.pdf_class.value if isinstance(d.pdf_class, PdfClass) else d.pdf_class,
+                "page_count": d.page_count,
+                "uploaded_at": d.uploaded_at,
+            }
+            for d in docs
+        ],
+    }
+
+
+@app.patch("/api/tickers/{ticker}/documents/{doc_id}")
+def update_document_metadata(ticker: str, doc_id: str, req: UpdateDocumentMetadataRequest):
+    """Updates fiscal year or reporting basis metadata for a stored document."""
+    clean_ticker = ticker.strip().upper()
+    updated = document_store.update(clean_ticker, doc_id, fiscal_year=req.fiscal_year, basis=req.basis)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {
+        "doc_id": updated.doc_id,
+        "ticker": updated.ticker,
+        "filename": updated.filename,
+        "fiscal_year": updated.fiscal_year,
+        "basis": updated.basis.value if isinstance(updated.basis, ReportingBasis) else updated.basis,
+        "pdf_class": updated.pdf_class.value if isinstance(updated.pdf_class, PdfClass) else updated.pdf_class,
+        "page_count": updated.page_count,
+        "uploaded_at": updated.uploaded_at,
+    }
+
+
+@app.delete("/api/tickers/{ticker}/documents/{doc_id}")
+def delete_ticker_document(ticker: str, doc_id: str):
+    """Deletes a stored document and its metadata sidecar."""
+    clean_ticker = ticker.strip().upper()
+    deleted = document_store.delete(clean_ticker, doc_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "deleted", "doc_id": doc_id}
+
+
+@app.post("/api/tickers/{ticker}/documents/extract")
+def extract_ticker_documents(ticker: str, req: ExtractDocumentsRequest):
+    """
+    Runs extraction on stored documents for a ticker without running full evaluation.
+    Returns parsed fields with provenance (page citations, extraction method, confidence).
+    """
+    clean_ticker = ticker.strip().upper()
+    docs = document_store.list_for_ticker(clean_ticker)
+    if req.document_ids:
+        docs = [d for d in docs if d.doc_id in req.document_ids]
+
+    if not docs:
+        raise HTTPException(status_code=404, detail="No documents found for extraction")
+
+    res = annual_report_adapter.parse_documents(docs)
+
+    return {
+        "ticker": clean_ticker,
+        "documents_count": len(docs),
+        "fields_count": len(res.fields),
+        "errors_count": len(res.errors),
+        "errors": [{"field_name": e.field_name, "message": e.message} for e in res.errors],
+        "fields": [
+            {
+                "field_name": f.field_name,
+                "value": f.value,
+                "confidence": f.confidence.value,
+                "period": f.period,
+                "basis": f.basis.value,
+                "source": f.source,
+                "page": f.page,
+                "document_id": f.document_id,
+                "raw_snippet": f.raw_snippet,
+            }
+            for f in res.fields
+        ],
+    }
+
+
+@app.get("/api/tickers/{ticker}/review")
+def list_review_queue(ticker: str):
+    """Lists pending review queue items for a ticker."""
+    clean_ticker = ticker.strip().upper()
+    items = review_store.list_for_ticker(clean_ticker)
+    return {"ticker": clean_ticker, "items": [item.model_dump() for item in items]}
+
+
+@app.post("/api/review/{item_id}/resolve")
+def resolve_review_item(item_id: str, req: ResolveReviewRequest):
+    """Resolves a pending review queue item with an analyst decision."""
+    item = review_store.resolve(item_id, resolved_value=req.resolved_value, reviewer=req.reviewer)
+    if not item:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    return {"status": "resolved", "item_id": item_id, "resolved_value": req.resolved_value}
 
 
 @app.get("/api/fixtures")
