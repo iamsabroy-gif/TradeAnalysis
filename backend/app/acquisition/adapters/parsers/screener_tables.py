@@ -20,16 +20,43 @@ from backend.app.acquisition.types import (
 from backend.app.models.enums import Confidence, ExtractionMethod, ReportingBasis
 
 
+_NIL_TOKENS = {"", "-", "--", "—", "–", "−", "n/a", "na", "nil", "none"}
+_CURRENCY_AND_MARKERS = re.compile(r"[`\u20b9$*#†‡^~]|(?:\bRs\.?|\bINR)", re.IGNORECASE)
+_NUMERIC = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+
 def parse_clean_number(text: str) -> Optional[float]:
-    if not text:
+    """
+    Parses a numeric cell from a Screener table or an Annual Report line.
+
+    Handles the notations these sources actually use: thousands separators,
+    accounting negatives in parentheses, the rupee symbol and the backtick that
+    PDF extraction leaves in its place, footnote markers, and the several dash
+    characters that stand for nil.
+    """
+    if text is None:
         return None
-    cleaned = text.replace(",", "").replace("%", "").strip()
-    if cleaned in {"", "-", "—", "N/A", "NA"}:
+
+    cleaned = _CURRENCY_AND_MARKERS.sub(" ", str(text))
+    cleaned = cleaned.replace("\u00a0", " ").replace("\u2009", " ").replace("%", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned.lower() in _NIL_TOKENS:
         return None
-    try:
-        return float(cleaned)
-    except ValueError:
+
+    negative = False
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        negative = True
+        cleaned = cleaned[1:-1].strip()
+
+    cleaned = cleaned.replace("−", "-").replace("–", "-").replace("—", "-")
+    cleaned = cleaned.replace(",", "")
+    # An interior space means two adjacent columns were merged, not a single
+    # number - refuse it rather than concatenating unrelated digits.
+    if " " in cleaned or not _NUMERIC.match(cleaned):
         return None
+
+    value = float(cleaned)
+    return -value if negative else value
 
 
 def normalize_period_to_fy(text: str) -> str:

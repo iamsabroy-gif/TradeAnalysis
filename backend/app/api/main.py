@@ -110,6 +110,13 @@ def get_sources_health():
     return registry.health_check_all()
 
 
+@app.post("/api/sources/{source}/reset")
+def reset_source_circuit(source: str):
+    """Clears a source's circuit breaker so the next fetch is attempted immediately."""
+    state = screener_adapter.http_client.reset_circuit(source)
+    return {"source": source, "circuit_breaker": state}
+
+
 @app.get("/api/coverage")
 def get_field_coverage():
     """Returns the §3 Field Coverage Matrix enriched with phase owners."""

@@ -131,7 +131,6 @@ export default function DocumentManager({
           `Uploaded ${data.documents ? data.documents.length : 1} report(s). 0 structured note fields could be auto-extracted. You can review or enter values manually below.`
         );
       }
-      refreshReviewQueue();
     } catch (err) {
       setError(`PDF Upload Error: ${err.message}`);
     } finally {

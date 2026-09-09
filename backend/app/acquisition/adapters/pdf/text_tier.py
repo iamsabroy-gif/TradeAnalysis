@@ -9,28 +9,67 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import pymupdf as fitz
 
-from backend.app.acquisition.adapters.pdf.anchors import SECTION_PATTERNS, matches_anchor
+from backend.app.acquisition.adapters.pdf.anchors import (
+    SECTION_PATTERNS,
+    locate_basis_page_range,
+    matches_anchor,
+    normalize_quotes,
+)
 from backend.app.acquisition.types import ExtractedField
 from backend.app.models.enums import AuditOpinion, Confidence, ExtractionMethod, ReportingBasis
 
 
-def locate_auditor_report_pages(doc: fitz.Document) -> List[int]:
+# The bare word "Opinion" appears in board reports and accounting policies all
+# through an annual report, so the report's opening page is identified by its
+# masthead plus the addressee line that only the statutory report carries.
+_AUDITOR_REPORT_HEADINGS = [
+    r"independent auditor'?s'? report",
+    r"report on the audit of the (?:standalone|consolidated) financial statements",
+]
+_AUDITOR_REPORT_CONFIRMERS = ["to the members", "we have audited"]
+
+
+def locate_auditor_report_pages(
+    doc: fitz.Document,
+    basis: Optional[ReportingBasis] = None,
+) -> List[int]:
     """
     Finds page indices (0-based) containing the Independent Auditor's Report.
+    When `basis` is given and the document separates its standalone and
+    consolidated sections, only that basis's report is returned.
     """
-    candidate_pages = []
-    for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
-        matched, score, _ = matches_anchor(text[:1000], SECTION_PATTERNS["auditor_opinion"])
-        if matched:
-            candidate_pages.append(page_idx)
-            # Auditor reports typically span 3-10 pages
-            for next_idx in range(page_idx + 1, min(page_idx + 12, len(doc))):
-                next_text = doc[next_idx].get_text("text")
-                if "independent auditor" in next_text.lower() or "basis for opinion" in next_text.lower() or "key audit matters" in next_text.lower():
-                    if next_idx not in candidate_pages:
-                        candidate_pages.append(next_idx)
-            break
+    page_texts = [doc[i].get_text("text") for i in range(len(doc))]
+    start, end = 0, len(page_texts)
+    if basis is not None:
+        page_range = locate_basis_page_range(page_texts, basis.value)
+        if page_range:
+            start, end = page_range
+
+    first_page: Optional[int] = None
+    for page_idx in range(start, end):
+        text = re.sub(r"\s+", " ", normalize_quotes(page_texts[page_idx]).lower())
+        head = text[:1500]
+        if not any(re.search(pat, head) for pat in _AUDITOR_REPORT_HEADINGS):
+            continue
+        if not any(marker in head for marker in _AUDITOR_REPORT_CONFIRMERS):
+            # A contents entry or a cross-reference, not the report itself.
+            continue
+        first_page = page_idx
+        break
+
+    if first_page is None:
+        return []
+
+    # Auditor reports typically span 3-10 pages.
+    candidate_pages = [first_page]
+    for next_idx in range(first_page + 1, min(first_page + 12, end)):
+        next_text = normalize_quotes(page_texts[next_idx]).lower()
+        if (
+            "independent auditor" in next_text
+            or "basis for opinion" in next_text
+            or "key audit matters" in next_text
+        ):
+            candidate_pages.append(next_idx)
     return candidate_pages
 
 
@@ -45,17 +84,21 @@ def extract_audit_opinion_from_doc(
     Extracts and classifies the statutory audit opinion into CLEAN, QUALIFIED, ADVERSE, or DISCLAIMER.
     Returns ExtractedField with exact page citation and raw text snippet.
     """
-    pages = locate_auditor_report_pages(doc)
+    pages = locate_auditor_report_pages(doc, basis=basis)
     if not pages:
-        # Fallback search across all pages
+        # Fallback search across all pages, ignoring the basis split.
+        pages = locate_auditor_report_pages(doc)
+    if not pages:
         for page_idx in range(len(doc)):
-            text = doc[page_idx].get_text("text")
-            if "independent auditor's report" in text.lower() or "independent auditors' report" in text.lower():
+            text = normalize_quotes(doc[page_idx].get_text("text")).lower()
+            if "independent auditor's report" in text:
                 pages.append(page_idx)
 
     for page_idx in pages:
         text = doc[page_idx].get_text("text")
-        lower = text.lower()
+        # Opinion wording wraps across lines in the PDF, so match against text
+        # with its line breaks collapsed.
+        lower = re.sub(r"\s+", " ", normalize_quotes(text).lower())
 
         # Check for Adverse Opinion
         if "adverse opinion" in lower:

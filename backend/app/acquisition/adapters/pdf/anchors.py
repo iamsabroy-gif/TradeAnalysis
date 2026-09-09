@@ -134,3 +134,55 @@ def detect_fiscal_year_from_text(text: str) -> Optional[str]:
         return f"FY{m.group(1)}"
 
     return None
+
+
+# Annual reports carry the standalone and the consolidated financial statements
+# back to back, each opening with its own Independent Auditor's Report. Notes for
+# both bases therefore repeat, and an extractor that takes the first anchor hit
+# silently reads the wrong set of numbers.
+BASIS_SECTION_PATTERNS: Dict[str, List[str]] = {
+    "STANDALONE": [
+        r"report on the audit of the standalone financial statements",
+        r"notes to the standalone financial statements",
+    ],
+    "CONSOLIDATED": [
+        r"report on the audit of the consolidated financial statements",
+        r"notes to the consolidated financial statements",
+    ],
+}
+
+
+def normalize_quotes(text: str) -> str:
+    """Folds typographic quotes to ASCII so literal anchors match real PDF text."""
+    return (
+        text.replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+    )
+
+
+def locate_basis_page_range(page_texts: List[str], basis: str) -> Optional[Tuple[int, int]]:
+    """
+    Finds the 0-based [start, end) page range holding the financial statements for
+    `basis`. Returns None when the document does not separate the two bases.
+    """
+    starts: Dict[str, int] = {}
+    for page_idx, raw in enumerate(page_texts):
+        text = re.sub(r"\s+", " ", normalize_quotes(raw or "").lower())
+        matched = [
+            section
+            for section, patterns in BASIS_SECTION_PATTERNS.items()
+            if any(re.search(pat, text) for pat in patterns)
+        ]
+        # A contents page names both sections; it marks the start of neither.
+        if len(matched) != 1:
+            continue
+        starts.setdefault(matched[0], page_idx)
+
+    if basis not in starts:
+        return None
+
+    start = starts[basis]
+    later = [idx for idx in starts.values() if idx > start]
+    return start, (min(later) if later else len(page_texts))

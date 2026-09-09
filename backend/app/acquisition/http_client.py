@@ -14,7 +14,7 @@ import httpx
 from backend.app.models.enums import ReportingBasis
 from .cache import CacheBackend, FileCache
 from .robots import check_robots
-from .types import RawPage, SourceUnavailableError
+from .types import RawPage, SourceUnavailableError, TickerNotFoundError
 
 logger = logging.getLogger("phase1.acquisition.http")
 
@@ -26,6 +26,18 @@ class CircuitBreaker:
         self.consecutive_failures = 0
         self.last_failure_time: Optional[float] = None
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+
+    def reset(self):
+        """Manually clears the breaker (e.g. operator retry after a bad ticker)."""
+        self.consecutive_failures = 0
+        self.state = "CLOSED"
+        self.last_failure_time = None
+
+    def seconds_until_retry(self) -> int:
+        """Remaining cooldown before the breaker will probe again."""
+        if self.state != "OPEN" or self.last_failure_time is None:
+            return 0
+        return max(0, int(self.cooldown_seconds - (time.time() - self.last_failure_time)))
 
     def record_success(self):
         self.consecutive_failures = 0
@@ -94,6 +106,11 @@ class SourceHttpClient:
     def get_circuit_state(self, source: str) -> str:
         return self._get_breaker(source).state
 
+    def reset_circuit(self, source: str) -> str:
+        """Force a source's breaker back to CLOSED so the next call is attempted."""
+        self._get_breaker(source).reset()
+        return self._get_breaker(source).state
+
     def fetch_page(
         self,
         source: str,
@@ -108,7 +125,8 @@ class SourceHttpClient:
         breaker = self._get_breaker(source)
         if not breaker.can_request():
             raise SourceUnavailableError(
-                f"Source '{source}' is currently unavailable (circuit breaker is OPEN due to repeated errors)"
+                f"Source '{source}' is currently unavailable (circuit breaker is OPEN due to repeated errors). "
+                f"Retrying automatically in {breaker.seconds_until_retry()}s."
             )
 
         # 1. Check cache
@@ -165,6 +183,15 @@ class SourceHttpClient:
                         logger.warning(f"Source '{source}' returned HTTP {resp.status_code}. Backing off {wait_time:.1f}s (attempt {attempts}/{max_attempts})")
                         time.sleep(wait_time)
                         last_err = f"HTTP {resp.status_code}"
+                    elif resp.status_code == 404:
+                        # Unknown ticker/company: a caller mistake, not a source outage.
+                        raise TickerNotFoundError(
+                            f"No page found at {url} (HTTP 404) - check the ticker or Screener code"
+                        )
+                    elif 400 <= resp.status_code < 500:
+                        # Other client errors are request-specific; they say nothing about
+                        # source health, so they must not count toward the breaker.
+                        raise SourceUnavailableError(f"HTTP {resp.status_code} from {url}")
                     else:
                         breaker.record_failure()
                         raise SourceUnavailableError(f"HTTP {resp.status_code} from {url}")

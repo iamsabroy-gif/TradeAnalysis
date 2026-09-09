@@ -254,3 +254,123 @@ def test_tier2_note_table_extraction(tmp_path: Path):
     )
     assert isinstance(fields, list)
 
+
+
+# --- Line tier: borderless annual report notes ------------------------------
+# Real Indian annual report notes carry no ruling lines, so pdfplumber returns
+# no usable tables for them. These pages reproduce the text layout verbatim.
+
+BORDERLESS_EXPENSE_NOTE = """MINDA CORPORATION LIMITED | Annual Report - 2025-26 363
+2.34 Other expenses
+Particulars For the year ended For the year ended
+March 31, 2026 March 31, 2025
+Job work charges 844 730
+Legal and professional 436 488
+Auditor Remuneration (refer note 2.35) 21 16
+Loss allowance for expected credit loss - 34
+Miscellaneous expenses 384 311
+5,597 4,893"""
+
+BORDERLESS_CONTINGENT_NOTE = """2.37 Contingent liabilities
+Particulars As at As at
+March 31, 2026 March 31, 2025
+Claims against the Company not acknowledged as debts*
+a) Income-tax ^ { Amount paid under protest is ` 2 million (previous year: 2)} 680 21
+b) Sales tax/ VAT/GST {Amount paid under protest ` 14 million 321 82
+(previous year: ` 85 million)}
+c) Custom duty {Amount paid under protest ` 2 million 6 6
+d) Bonus payable for financial year 2014-15 as per payment of Bonus Act, 1965 1 1
+Others
+Contingent liabilities related to joint ventures / associates 44 65
+*including claim in respect of transferor companies merged into the Company
+2.38 Something else 999 999"""
+
+
+def _line_fields(page_text, wanted):
+    from backend.app.acquisition.adapters.pdf.table_tier import extract_line_fields_from_page
+
+    fields = extract_line_fields_from_page(
+        page_text=page_text,
+        page_no=7,
+        wanted=set(wanted),
+        source_filename="ar.pdf",
+        doc_fy="FY26",
+        basis=ReportingBasis.CONSOLIDATED,
+        document_id="doc1",
+    )
+    return {f.field_name: f for f in fields}
+
+
+def test_line_tier_reads_borderless_expense_note():
+    got = _line_fields(BORDERLESS_EXPENSE_NOTE, {"audit_fees", "legal_fees"})
+
+    assert got["legal_fees"].value == 436.0
+    assert got["legal_fees"].period == "FY26"
+    assert got["legal_fees_prior_year"].value == 488.0
+    assert got["legal_fees_prior_year"].period == "FY25"
+    assert got["audit_fees"].value == 21.0
+    assert got["audit_fees"].page == 7
+
+
+def test_line_tier_sums_contingent_liability_claims():
+    got = _line_fields(BORDERLESS_CONTINGENT_NOTE, {"contingent_liabilities"})
+
+    field = got["contingent_liabilities"]
+    # 680 + 321 + 6 + 1 + 44; the trailing note 2.38 ends the block.
+    assert field.value == 1052.0
+    assert field.period == "FY26"
+    assert field.confidence == Confidence.MEDIUM
+
+
+def test_line_tier_prefers_an_explicit_total_row():
+    page = """2.37 Contingent liabilities
+Particulars As at As at
+March 31, 2026 March 31, 2025
+a) Income-tax 680 21
+b) Custom duty 6 6
+Total 686 27"""
+    field = _line_fields(page, {"contingent_liabilities"})["contingent_liabilities"]
+
+    assert field.value == 686.0
+    assert field.confidence == Confidence.HIGH
+
+
+def test_line_tier_ignores_accounting_policy_prose():
+    page = """Provisions are recognised when the Company has a present obligation,
+accounted for under Ind AS 37 (Provisions, Contingent Liabilities and
+Contingent Assets). Revenue is measured based on the transaction price."""
+
+    assert _line_fields(page, {"contingent_liabilities"}) == {}
+
+
+def test_locate_basis_page_range_splits_the_two_sections():
+    from backend.app.acquisition.adapters.pdf.anchors import locate_basis_page_range
+
+    pages = [
+        "Contents Independent Auditor's Report on the Audit of the Standalone Financial "
+        "Statements 221 Report on the Audit of the Consolidated Financial Statements 305",
+        "Board's Report",
+        "Independent Auditor's Report To the Members Report on the Audit of the "
+        "Standalone Financial Statements Opinion",
+        "Notes to the Standalone Financial Statements",
+        "Independent Auditor's Report To the Members Report on the Audit of the "
+        "Consolidated Financial Statements Opinion",
+        "Notes to the Consolidated Financial Statements",
+    ]
+
+    # The contents page names both sections and must start neither.
+    assert locate_basis_page_range(pages, "STANDALONE") == (2, 4)
+    assert locate_basis_page_range(pages, "CONSOLIDATED") == (4, 6)
+
+
+def test_parse_clean_number_handles_annual_report_notation():
+    from backend.app.acquisition.adapters.parsers.screener_tables import parse_clean_number
+
+    assert parse_clean_number("1,234") == 1234.0
+    assert parse_clean_number("(1,234)") == -1234.0
+    assert parse_clean_number("` 420") == 420.0
+    assert parse_clean_number("1,234*") == 1234.0
+    assert parse_clean_number("—") is None
+    assert parse_clean_number("Nil") is None
+    # Two merged columns must not be read as one 5-digit number.
+    assert parse_clean_number("673 14") is None
