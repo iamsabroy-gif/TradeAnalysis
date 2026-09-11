@@ -16,12 +16,12 @@ CHECK_TECHNICAL_TITLES = {
 }
 
 CHECK_THRESHOLDS = {
-    1: "Clean audit opinion; No mid-tenure resignation (3y); No adverse reg order (5y); Legal fees <= 5x audit fees & <= 2x YoY growth",
+    1: "Clean audit opinion; No mid-tenure resignation (3y); No disqualifying reg action (5y); Legal fees/revenue within sector-tiered band (§8.4-E), no unexplained >2x YoY surge",
     2: "Pledged shares <= 10% of promoter holding; Non-rising trend (<= 2pp jump); Low-base guard (total pledged <= 0.5%)",
     3: "RPT sales+purchases <= 5% of revenue; No suspicious unlisted affiliate loans",
-    4: "Contingent liabilities <= 15% of net worth; Net worth > 0",
-    5: "Cumulative 5y CFO / PAT >= 0.80; Negative CFO years <= 2; Cumulative PAT > 0",
-    6: "CFO changes <= 1 in trailing 3 years; No retroactive restatements of accounts",
+    4: "Net worth > 0; Litigation & claims exposure <= 20% of net worth (routine guarantees/LCs excluded, §8.4-F)",
+    5: "Working-capital-cycle-tiered CFO/PAT floor (§8.4-G) with a global 0.50 hard floor; a verified use-of-funds explanation (§8.4-H) can upgrade a breach to PASS-with-warning",
+    6: "CFO changes <= 1 in trailing 3 years; No retroactive restatements of accounts (ESG/BRSR-only restatements excluded, §8.4-D)",
 }
 
 
@@ -45,6 +45,8 @@ def render_analyst_report(
                 "citation": c.citation or "MISSING_CITATION",
                 "basis": c.basis.value,
                 "fields_used": c.fields_used,
+                "confidence": c.confidence.value,
+                "has_mandatory_warning": c.has_mandatory_warning,
             }
         )
 
@@ -76,6 +78,8 @@ def render_analyst_report(
         "generated_at": result.generated_at,
         "failing_checks": result.failing_checks,
         "inconclusive_checks": result.inconclusive_checks,
+        "low_confidence_checks": result.low_confidence_checks,
+        "warning_checks": result.warning_checks,
         "citation_gaps": result.citation_gaps,
         "rows": rows,
         "provenance_items": prov_items,

@@ -16,6 +16,7 @@ from backend.app.acquisition.adapters.pdf.anchors import (
     matches_anchor,
     normalize_quotes,
 )
+from backend.app.acquisition.adapters.pdf.units import apply_unit_normalization, build_unit_map
 from backend.app.acquisition.types import ExtractedField
 from backend.app.models.enums import Confidence, ExtractionMethod, ReportingBasis
 
@@ -92,6 +93,12 @@ def extract_note_fields_from_pdf(
         # not silently return standalone numbers.
         basis_range = locate_basis_page_range(page_texts, basis.value)
         start, end = basis_range if basis_range else (0, total_pages)
+
+        # chunkrule-v3.md §3d — no report repeats its unit declaration on every
+        # page, so the last declaration at or before each page is carried
+        # forward. Applied once at the end, below, to every monetary field
+        # this scan produces (table tier and line tier alike).
+        unit_map = build_unit_map(page_texts)
 
         for page_idx in range(start, end):
             page = pdf.pages[page_idx]
@@ -272,7 +279,7 @@ def extract_note_fields_from_pdf(
                     )
                 )
 
-    return fields
+    return [apply_unit_normalization(f, unit_map) for f in fields]
 
 # ---------------------------------------------------------------------------
 # Line tier

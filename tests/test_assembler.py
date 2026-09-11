@@ -14,9 +14,11 @@ from backend.app.models.enums import (
     AuditOpinion,
     Confidence,
     ExtractionMethod,
+    IndustrySector,
     RegulatoryNature,
     ReportingBasis,
     Verdict,
+    WorkingCapitalCycleTier,
 )
 from backend.app.models.schemas import RegulatoryActionInput
 
@@ -43,12 +45,14 @@ def test_assembler_pipeline_to_decision_engine():
         "auditor_resigned_mid_tenure_last_3y": False,
         "audit_opinion": AuditOpinion.CLEAN,
         "regulatory_action": RegulatoryActionInput(active_or_past_5y=False, nature=RegulatoryNature.NONE),
-        "legal_fees": 50.0,
+        "legal_fees": 3.0,
         "audit_fees": 30.0,
-        "legal_fees_prior_year": 45.0,
+        "legal_fees_prior_year": 2.8,
+        "industry_sector": IndustrySector.TIER4_MANUFACTURING_INDUSTRIALS,
         "rpt_sales_plus_purchases": 40.0,
         "unusual_affiliate_dealings": False,
-        "contingent_liabilities": 100.0,
+        "contingent_liabilities": 40.0,
+        "working_capital_cycle_tier": WorkingCapitalCycleTier.MODERATE_CYCLE,
         "cfo_changes_last_3y": 0,
         "restatement_of_past_accounts": False,
     }

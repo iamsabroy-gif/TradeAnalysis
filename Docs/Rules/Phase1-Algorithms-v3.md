@@ -6,10 +6,33 @@ Status values used throughout: PASS, FAIL, INCONCLUSIVE. Never a numeric score.
 
 Revision 3 (see §13) adds explicit sourcing-confidence plumbing and years-available disclosure, closing three gaps a live run (Cyient DLM, Sep 2026) exposed: a FAIL reached on a partial track record didn't say so in its own finding text; a pledge-trend PASS could be reached from a single data point without flagging that it wasn't the full quarterly series; and "no regulatory action" / "no restatement" findings carried the same confidence whether they came from the named primary registry or a generic web pass. No threshold, exception, or decision rule changed — every number here is still exactly what Phase1-Rules.md §2 and §3 say. Revision 2's provenance/citation plumbing, comparability guards, and versioning are unchanged and retained below.
 
+Revision 4 (see §13) replaces Check 1.4's flat "legal fees > 5x audit fees / >2x YoY surge" thresholds with a revenue-normalized, industry-tiered test, per Phase1-Rules-v2.md §2 Check 1.4 and new §8.4-E. This is a genuine threshold/metric change, unlike Revision 3's sourcing-only changes — see §3 (Check 1) and §2f below, and the Revision 4 entry in §13 for full rationale and traceability.
+
+Revision 5 (see §13) replaces Check 4's flat "contingent liabilities > 15% of net worth" rule with a litigation-vs-routine split (Schedule III sub-categories), and Check 5's flat "CFO/PAT < 0.80, >=3-of-5-years-negative" rule with working-capital-cycle tiering plus a global 0.50 hard floor and an explicit not-applicable path for lending institutions — per Phase1-Rules-v2.md §2 Checks 4 and 5, and new §8.4-F / §8.4-G. Both are genuine threshold/metric changes. See §6 (Check 4), §7 (Check 5), §2g, and the Revision 5 entry in §13.
+
+Revision 6 (see §13) adds a use-of-funds verification override to Check 5 (Phase1-Rules-v2.md §2 Check 5, new §8.4-H), prompted by a live Phase 1 run on GRSE that breached even the Revision 5 hard floor by a wide margin in a way a follow-up forensic trace showed was overwhelmingly explained by working-capital absorption behind genuine revenue growth. Every Check 5 disqualifying trigger except cumulative PAT <= 0 is now routed through verify_use_of_funds() (§2h) before resolving — a verified-benign shortfall becomes a PASS carrying has_mandatory_warning = true (Phase1Result.warning_checks), never a silent PASS and never an automatic FAIL. This is a genuine, narrowly-scoped policy change — see §7 (Check 5), §2h, and the Revision 6 entry in §13.
+
 0. Data model (inputs)
 enum CompanyType { PRIVATE_PROMOTER, GOVT_PSU, PROFESSIONALLY_MANAGED }
 enum ReportingBasis { CONSOLIDATED, STANDALONE, NOT_APPLICABLE }
 enum Confidence { HIGH, MEDIUM, LOW, MANUAL, DERIVED }
+// Rev 4 — Rules §8.4-E sector tiers for the legal-fee-anomaly sub-check (Check 1.4).
+// TIER5_OTHER is the conservative default when classification is unavailable — never
+// silently default to a low-intensity tier, per Rules §8.4-E step 5.
+enum IndustrySector {
+  TIER1_FINANCIAL_SERVICES, TIER2_PHARMA_HEALTHCARE_IT, TIER3_REGULATED_GOVT_TELECOM_ENERGY,
+  TIER4_MANUFACTURING_INDUSTRIALS, TIER5_RETAIL_FMCG_CONSUMER, TIER_OTHER_UNCLASSIFIED
+}
+// Rev 5 — Rules §8.4-G tiers for Check 5's cash-conversion test. Deliberately a
+// separate axis from IndustrySector above: legal-spend intensity (Check 1) and
+// working-capital-cycle length (Check 5) classify the same company differently —
+// e.g. IT/Technology is TIER2 (elevated legal intensity) but SHORT_CYCLE_ASSET_LIGHT
+// (tight cash conversion) — so the two enums must never be conflated or reused for
+// each other's lookup.
+enum WorkingCapitalCycleTier {
+  LONG_CYCLE_PROJECT_ACCOUNTING, MODERATE_CYCLE, SHORT_CYCLE_ASSET_LIGHT,
+  LENDING_INSTITUTION_NA, TIER_OTHER_UNCLASSIFIED
+}
 
 // Provenance is a first-class input, not an afterthought. Rules §1 requires
 // "cite the source and period for each" data point, and CheckResult.citation below
@@ -55,8 +78,16 @@ struct CompanyInput {
     retrieval_tier: RetrievalTier | null   // new in Rev 3 — was this sourced per §8.4-A?
   }
   legal_fees: number | null            // latest FY, currency units
-  audit_fees: number | null            // latest FY, currency units
+  audit_fees: number | null            // latest FY, currency units — Rev 4: secondary/
+                                        // corroboration only, no longer a required field
+                                        // for this check, see §3 fee-anomaly sub-check
   legal_fees_prior_year: number | null // for surge check
+  industry_sector: IndustrySector | null   // Rev 4 — NSE/BSE sector tag, mapped via
+                                            // sector_flag_threshold() in §2f
+  legal_fee_surge_explained: bool | null   // Rev 4 — true only if a disclosed one-off
+                                            // cause for a >2x YoY legal-fee increase was
+                                            // found (Contingent Liabilities note, Board's
+                                            // Report, or news) per Rules §8.4-E step 4
 
   // Check 2 — Promoter Pledge
   govt_shareholding_pct: number | null       // central+state, direct+indirect
@@ -71,16 +102,44 @@ struct CompanyInput {
 
   // Check 3 — Related Party Transactions
   rpt_sales_plus_purchases: number | null
-  revenue: number | null                    // same statement, same FY, same basis as the RPT note
+  revenue: number | null                    // same statement, same FY, same basis as the RPT note.
+                                             // Rev 4: also consumed by Check 1's fee-anomaly
+                                             // sub-check (§8.4-E) — same comparability requirement.
   unusual_affiliate_dealings: bool | null   // large/unexplained loans/deals w/ unlisted affiliates
 
-  // Check 4 — Contingent Liabilities
-  contingent_liabilities: number | null
+  // Check 4 — Contingent Liabilities. Rev 5 — Rules §2 Check 4 / §8.4-E: the flat
+  // total-contingent-liabilities ratio is replaced by a litigation-vs-routine split,
+  // since Schedule III already requires the sub-category breakdown (see §8.4-F).
   net_worth: number | null                  // total equity / shareholders' funds, same FY & basis
+  litigation_claims_exposure: number | null // Rev 5 — claims not acknowledged as debts +
+                                             // disputed tax demands + contested claims +
+                                             // related-party guarantees outside ordinary course
+  routine_guarantee_exposure: number | null // Rev 5 — ordinary-course guarantees/LCs + bills
+                                             // discounted; retained for citation, excluded
+                                             // from the FAIL ratio entirely (§8.4-F)
+  contingent_liabilities: number | null     // Rev 5 — retained only as the lump-total fallback
+                                             // when the AR does not disclose a sub-category
+                                             // breakdown; see check4's immateriality fast-path
+  contingent_liabilities_breakdown_available: bool | null  // Rev 5 — true only if the Schedule
+                                             // III sub-categories were actually extracted
+                                             // separately, per §8.4-F step 1
 
   // Check 5 — Cash Conversion (up to 5 fiscal years, oldest -> newest)
   cfo_last_5y: number[] | null   // cash from operations, len <= 5
   pat_last_5y: number[] | null   // profit after tax, len <= 5
+  working_capital_cycle_tier: WorkingCapitalCycleTier | null  // Rev 5 — Rules §8.4-G;
+      // LENDING_INSTITUTION_NA routes this check to INCONCLUSIVE instead of a ratio
+  // Rev 6 — Rules §8.4-H use-of-funds verification fields. Consumed only when a
+  // disqualifying trigger actually fires; not required for a company that clears the
+  // ratio/negative-years tests outright.
+  revenue_last_5y: number[] | null      // same FY alignment/basis as cfo_last_5y/pat_last_5y
+  cumulative_working_capital_change_5y: number | null
+      // the Cash Flow Statement's own "Changes in working capital" reconciling subtotal
+      // (Ind AS 7 indirect method), summed across the same 5 years — a direct AR
+      // extraction, never derived by summing individual balance-sheet note movements
+  liquid_cushion_first_year: number | null   // cash & equivalents + other bank balances
+      // (incl. FDs) + current investments, Balance Sheet, FIRST year of the 5y window
+  liquid_cushion_last_year: number | null    // same composition, LAST year of the window
   years_5y_series_gap_checked: bool | null
       // new in Rev 3 — true only if the §8.4-C completeness sub-step (Screener extended
       // view / RHP-DRHP / older AR) was actually attempted before accepting a short series.
@@ -123,6 +182,11 @@ struct CheckResult {
                                   // fields_used; HIGH if all PRIMARY, MEDIUM if any FALLBACK,
                                   // unchanged (MANUAL/DERIVED etc.) if a field already carried
                                   // a more specific tag — see roll_up_confidence() in §2d
+  has_mandatory_warning: bool     // new in Rev 6 — true only for a Check 5 PASS reached via
+                                  // the §8.4-H use-of-funds override. Defaults false for every
+                                  // other check and every ordinary Check 5 PASS. Forces the
+                                  // renderer (§10) to produce the dedicated warning paragraph
+                                  // from Rules §5d — never a silent PASS.
 }
 
 struct Phase1Result {
@@ -138,6 +202,12 @@ struct Phase1Result {
   low_confidence_checks: int[]    // new in Rev 3 — check_ids where confidence != HIGH,
                                   // regardless of PASS/FAIL — surfaced to the renderer so
                                   // §5's confidence-labelling requirement can't be skipped
+  warning_checks: int[]           // new in Rev 6 — check_ids where has_mandatory_warning
+                                  // == true (today, only ever [5] or []). Never affects
+                                  // verdict — a warning-flagged check already resolved to
+                                  // PASS — its only job is to force the renderer's §5d
+                                  // dedicated warning paragraph, same pattern as
+                                  // low_confidence_checks for confidence disclosure.
 
   // Versioning. A verdict can legitimately change when a manual review resolves a
   // previously-missing field (HOLD -> REJECT or HOLD -> CLEARED). Anything already
@@ -305,16 +375,103 @@ function roll_up_confidence(input: CompanyInput, fields_used: string[],
 
 Every check function that touches regulatory_action, pledged_pct_history_last_4q, or restatement_of_past_accounts calls roll_up_confidence() when building its CheckResult, and appends build_finding_suffix(...) to the finding string wherever the track-record guard (§2) fired on a short window. See Checks 1, 2, 5, and 6 below for the exact call sites.
 
+2f. Helper: sector flag-threshold lookup (new in Revision 4)
+
+Feeds Check 1's fee-anomaly sub-check. Rules §8.4-E table, reproduced here as data rather than re-derived — if the table in the rules file changes, this map changes in the same edit, per §13's change-control rule.
+
+function sector_flag_threshold(sector: IndustrySector) -> number:
+    // Returns the flag threshold as a percentage-of-revenue figure (e.g. 1.35 means 1.35%).
+    return {
+        TIER1_FINANCIAL_SERVICES:           1.35,
+        TIER2_PHARMA_HEALTHCARE_IT:         0.75,
+        TIER3_REGULATED_GOVT_TELECOM_ENERGY: 0.68,
+        TIER4_MANUFACTURING_INDUSTRIALS:    0.45,
+        TIER5_RETAIL_FMCG_CONSUMER:         0.30,
+        TIER_OTHER_UNCLASSIFIED:            0.75,
+    }[sector]
+
+Note on the last row: TIER_OTHER_UNCLASSIFIED intentionally uses the same threshold as Tier 2, not a looser one — Rules §8.4-E step 5 requires that an unclassified sector never default to a low-intensity (permissive) band, since that would under-flag rather than over-flag.
+
+2g. Helper: working-capital-cycle threshold lookup (new in Revision 5)
+
+Feeds Check 5's cash-conversion test. Rules §8.4-G table, reproduced here as data. Returns both the CFO/PAT flag threshold and the negative-CFO-years trigger for a tier, since §8.4-G ties them together.
+
+function working_capital_cycle_thresholds(tier: WorkingCapitalCycleTier) -> {cfo_pat_floor: number, negative_years_trigger: int}:
+    return {
+        LONG_CYCLE_PROJECT_ACCOUNTING: {cfo_pat_floor: 0.65, negative_years_trigger: 4},
+        MODERATE_CYCLE:                {cfo_pat_floor: 0.75, negative_years_trigger: 3},
+        SHORT_CYCLE_ASSET_LIGHT:       {cfo_pat_floor: 0.85, negative_years_trigger: 3},
+        TIER_OTHER_UNCLASSIFIED:       {cfo_pat_floor: 0.75, negative_years_trigger: 3},
+        // LENDING_INSTITUTION_NA deliberately has no entry — check5 must branch to
+        // INCONCLUSIVE before calling this function for that tier, never look up a
+        // threshold for it. A missing-key lookup here is a caller bug, not a valid case.
+    }[tier]
+
+Note on TIER_OTHER_UNCLASSIFIED: uses the Moderate-cycle thresholds, the same "never default to the most lenient tier" principle as §2f — an unclassified non-lending company must not silently receive the Long-cycle tier's looser 0.65/4-years allowance.
+
+The global backstops (cumulative PAT ≤ 0, cumulative CFO/PAT < 0.50) are not part of this lookup — they are checked directly in check5_cash_conversion() before the tier-specific thresholds, and apply regardless of tier or this function's return value. Rev 6 note: cumulative PAT ≤ 0 remains a true unconditional FAIL with no override anywhere in this spec; the 0.50 floor is no longer unconditional — as of Rev 6 it is one of three triggers eligible for the §2h use-of-funds verification override, same as the tier-specific ratio floor and the negative-years trigger. See §2h and check5_cash_conversion() below.
+
+2h. Helper: use-of-funds verification (new in Revision 6)
+
+Feeds Check 5. Rules §8.4-H's three conditions, reproduced as a single pure function — called at most once per check5_cash_conversion() invocation (Rules §8.4-H step 6), regardless of how many of the three disqualifying triggers actually fired.
+
+function verify_use_of_funds(input: CompanyInput, cumulative_pat: number, cumulative_cfo: number) -> {verified: bool, notes: string[]} | null:
+    // Returns null — not {verified: false} — if the fields needed to even attempt
+    // verification are missing. Callers MUST treat null as "cannot verify," which
+    // Rules §8.4-H step 4 requires to leave the disqualifying trigger as FAIL, not
+    // silently pass it. This is a deliberate golden-rule application: an unattempted
+    // verification is missing data, not a negative result.
+    required = [revenue_last_5y, cumulative_working_capital_change_5y,
+                liquid_cushion_first_year, liquid_cushion_last_year]
+    if any(required) is null:
+        return null
+    if length(input.revenue_last_5y) < 2 or input.revenue_last_5y[0] <= 0:
+        return null   // can't compute a first->last growth ratio
+
+    notes = []
+
+    // (a) Growth is real
+    revenue_growth_ratio = last(input.revenue_last_5y) / input.revenue_last_5y[0]
+    growth_ok = revenue_growth_ratio >= 1.5
+    notes.append(f"(a) revenue grew {revenue_growth_ratio}x over the window "
+                 f"(>= 1.5x required): {\"met\" if growth_ok else \"NOT met\"}")
+
+    // (b) The shortfall is a working-capital story
+    gap = cumulative_pat - cumulative_cfo
+    if gap <= 0:
+        return null   // verify_use_of_funds is only meaningful when there IS a
+                       // shortfall to explain; callers only invoke this when a
+                       // disqualifying trigger already implies gap > 0, but guard here too
+    wc_coverage = abs(input.cumulative_working_capital_change_5y) / abs(gap)
+    wc_ok = wc_coverage >= 0.60
+    notes.append(f"(b) working-capital change covers {wc_coverage*100}% of the "
+                 f"PAT-CFO gap (>= 60% required): {\"met\" if wc_ok else \"NOT met\"}")
+
+    // (c) Not hoarding
+    cushion_pct_first = input.liquid_cushion_first_year / input.revenue_last_5y[0]
+    cushion_pct_last = input.liquid_cushion_last_year / last(input.revenue_last_5y)
+    hoarding_ok = cushion_pct_last <= cushion_pct_first * 1.10
+    notes.append(f"(c) liquid cushion is {cushion_pct_last*100}% of revenue in the "
+                 f"latest year vs {cushion_pct_first*100}% in the first year "
+                 f"(must not exceed a 10% rise): {\"met\" if hoarding_ok else \"NOT met\"}")
+
+    return {verified: (growth_ok and wc_ok and hoarding_ok), notes: notes}
+
+Note: all three conditions must hold — this is a logical AND, not a majority vote. A company that passes (a) and (b) but is quietly accumulating cash under (c) does NOT get the override; nor does a company with a flat working-capital shortfall who happens to hold a shrinking cushion under (c) but fails (b) (i.e. the shortfall isn't actually a working-capital story at all). The notes list is always returned alongside the verdict — even a failed verification must show its work, per Rules §8.4-H step 5.
+
 3. Check 1 — Auditor & Regulator Integrity (Section A Q1)
 function check1_auditor_regulator(input: CompanyInput) -> CheckResult:
 
-    // Required fields
+    // Required fields. Rev 4: audit_fees dropped from this list — it is now secondary/
+    // corroboration only (see the fee-anomaly sub-check below). revenue and
+    // industry_sector added — they are what the primary fee-anomaly test now runs on.
     required = [auditor_resigned_mid_tenure_last_3y, audit_opinion,
-                regulatory_action.active_or_past_5y, legal_fees, audit_fees]
+                regulatory_action.active_or_past_5y, legal_fees, revenue, industry_sector]
     if any(required) is null:
         return INCONCLUSIVE("Check 1: missing one or more of "
                              "[auditor resignation history, audit opinion, "
-                             "regulatory action status, legal/audit fee figures]")
+                             "regulatory action status, legal fees, revenue, "
+                             "industry sector classification]")
 
     years_available = input.years_of_track_record_available
     guard = apply_track_record_guard(
@@ -344,33 +501,50 @@ function check1_auditor_regulator(input: CompanyInput) -> CheckResult:
         fail_reasons.append("REGULATORY_ACTION:" + input.regulatory_action.nature)
     // Note: ROUTINE_PROCEDURAL nature is explicitly excluded — not a fail trigger.
 
-    // Fee-ratio sub-check. Guarded for comparability first: a legal fee from the
-    // consolidated statements over an audit fee from the standalone ones is meaningless.
-    fee_mismatch = assert_comparable(input, ["legal_fees", "audit_fees"])
+    // Fee-anomaly sub-check (Rev 4 — Rules §2 Check 1.4 / §8.4-E). Primary test is
+    // revenue-normalized and industry-tiered, not a flat multiple of audit fees: audit
+    // fees carry a fixed-cost floor and do not scale linearly with revenue, so a flat
+    // cross-company ratio systematically over-flags small/mid-caps and under-flags large
+    // caps at identical legal intensity. Guarded for comparability first, same as Check 3.
+    pass_notes = []           // Rev 4 — non-blocking observations folded into the PASS finding
+    fee_mismatch = assert_comparable(input, ["legal_fees", "revenue"])
     if fee_mismatch is not null:
-        inconclusive_notes.append("legal/audit fee ratio not computable: " + fee_mismatch)
-    else if input.audit_fees > 0:
-        ratio = input.legal_fees / input.audit_fees
-        surge = (input.legal_fees_prior_year is not null and input.legal_fees_prior_year > 0
-                 and input.legal_fees / input.legal_fees_prior_year > 2)
-        if ratio > 5:
-            fail_reasons.append("LEGAL_FEES_EXCEED_5X_AUDIT_FEES:" + ratio)
-        elif surge:
-            fail_reasons.append("LEGAL_FEES_SURGE_OVER_2X_YOY")
+        inconclusive_notes.append("legal-fee-to-revenue check not computable: " + fee_mismatch)
+    else if input.revenue <= 0:
+        inconclusive_notes.append("revenue is zero/negative; legal-fee-to-revenue check undefined")
     else:
-        // audit_fees is present but zero — the ratio is undefined, not a red flag.
-        inconclusive_notes.append("audit_fees is zero; legal/audit ratio undefined")
+        legal_pct_revenue = (input.legal_fees / input.revenue) * 100
+        flag_threshold = sector_flag_threshold(input.industry_sector)   // §2f
+        surge = (input.legal_fees_prior_year is not null and input.legal_fees_prior_year > 0
+                 and input.legal_fees / input.legal_fees_prior_year > 2
+                 and input.legal_fee_surge_explained != true)
+        if legal_pct_revenue > flag_threshold:
+            fail_reasons.append("LEGAL_PCT_REVENUE_EXCEEDS_SECTOR_BAND:" + legal_pct_revenue
+                                 + "%>" + flag_threshold + "% (" + input.industry_sector + ")")
+        elif surge:
+            fail_reasons.append("LEGAL_FEES_UNEXPLAINED_SURGE_OVER_2X_YOY")
+        else:
+            // Secondary corroboration only (Rules §8.4-E(c)) — never a standalone fail
+            // trigger, because audit_fees is a confounded denominator. Surfaced as an
+            // observation on the PASS finding, not as a fail_reason or inconclusive_note.
+            secondary_mismatch = assert_comparable(input, ["legal_fees", "audit_fees"])
+            if secondary_mismatch is null and input.audit_fees is not null and input.audit_fees > 0:
+                ratio = input.legal_fees / input.audit_fees
+                if ratio > 5:
+                    pass_notes.append("legal/audit fee ratio " + ratio
+                        + "x is elevated but legal spend is within the sector's "
+                        + "revenue-intensity band, so not treated as a fail trigger")
 
     (citation, missing_prov) = compose_citation(input,
         ["audit_opinion", "auditor_resigned_mid_tenure_last_3y",
-         "regulatory_action", "legal_fees", "audit_fees"])
+         "regulatory_action", "legal_fees", "revenue", "industry_sector"])
 
     // Rev 3: confidence roll-up, keyed on the regulatory_action field's retrieval tier
     // per Rules §8.4-A. A fallback-sourced "no action found" is MEDIUM even when it
     // contributes to a clean PASS finding, not just when it would have changed a FAIL.
     confidence = roll_up_confidence(input,
         fields_used = ["audit_opinion", "auditor_resigned_mid_tenure_last_3y",
-                        "regulatory_action", "legal_fees", "audit_fees"],
+                        "regulatory_action", "legal_fees", "revenue", "industry_sector"],
         retrieval_tier_fields = {"regulatory_action": input.regulatory_action.retrieval_tier})
 
     // FAIL dominates: a real disqualifying event still fails even if a sub-check
@@ -381,13 +555,17 @@ function check1_auditor_regulator(input: CompanyInput) -> CheckResult:
                     citation, confidence)
     if inconclusive_notes is non-empty:
         return INCONCLUSIVE(1, missing_data = join("; ", inconclusive_notes), citation)
+    note_suffix = (pass_notes is non-empty) ? " — " + join("; ", pass_notes) : ""
     return PASS(1, "clean opinion, no mid-tenure resignation, no disqualifying "
-                   "regulatory action, legal/audit fee ratio normal" + suffix,
+                   "regulatory action, legal spend within sector revenue-intensity band"
+                   + note_suffix + suffix,
                 citation, confidence)
 
-Fix retained from Revision 2. The zero-audit-fee note is an INCONCLUSIVE sub-check, never folded into fail_reasons — a company with a clean opinion and a zero/unparsed audit fee is not rejected outright. Missing information is a hold, not a fail.
+Fix retained from Revision 2, restated for Rev 4's new denominator. An uncomputable sub-check (mismatched basis/period, or zero/negative revenue) is an INCONCLUSIVE sub-check, never folded into fail_reasons — a company with a clean opinion and an unparsable revenue figure is not rejected outright. Missing information is a hold, not a fail. (Revision 2's original zero-audit-fee case no longer applies the same way, since audit_fees is no longer required — see the Revision 4 changelog entry in §13 for the corresponding fixture 13 update.)
 
 New in Revision 3. suffix (years-available disclosure) is now attached to every return path, not only the guard's own forced statuses — a normal-window FAIL or PASS gets an empty suffix, so nothing changes in the common case; the short-window case now always shows its shortfall. confidence is now computed and attached to every return path via roll_up_confidence(), keyed on whether the regulatory-action finding was sourced from the primary SEBI-archive query (Rules §8.4-A) or a generic fallback.
+
+New in Revision 4. The fee-anomaly sub-check no longer treats a flat legal ÷ audit fee ratio as a fail trigger on its own — see Rules §8.4-E for why. It now runs primarily on legal_pct_revenue against an industry-tiered band (§2f), with the audit-fee ratio demoted to a pass_notes observation. The YoY surge trigger is now gated on legal_fee_surge_explained, so a disclosed one-off cause (e.g. M&A due diligence, a settlement, capital-raise legal costs) no longer forces a FAIL.
 
 4. Check 2 — Promoter Pledge & Encumbrance (Section A Q2)
 function check2_promoter_pledge(input: CompanyInput) -> CheckResult:
@@ -521,35 +699,97 @@ function check3_related_party(input: CompanyInput) -> CheckResult:
                 citation, confidence = HIGH)
 6. Check 4 — Contingent Liabilities (Section A Q4)
 
-Unchanged from Revision 2, same reason as Check 3.
+Rev 5 (Rules §2 Check 4 / §8.4-F): the flat total-contingent-liabilities-over-net-worth
+ratio is replaced by a litigation-vs-routine split, since Schedule III already requires
+the sub-category breakdown and a blended total makes the ratio meaningless for banks,
+NBFCs, and EPC/infrastructure contractors (routine guarantee/LC/forex business dwarfs
+any genuine litigation exposure for those sectors). net_worth <= 0 remains an
+unconditional FAIL, unchanged from Revision 2/3.
 
 function check4_contingent_liabilities(input: CompanyInput) -> CheckResult:
 
-    required = [contingent_liabilities, net_worth]
-    if any(required) is null:
-        return INCONCLUSIVE("Check 4: missing contingent liabilities or net worth figure")
+    if input.net_worth is null:
+        return INCONCLUSIVE("Check 4: missing net worth figure")
 
-    mismatch = assert_comparable(input, ["contingent_liabilities", "net_worth"])
+    if input.net_worth <= 0:
+        (nw_citation, _) = compose_citation(input, ["net_worth"])
+        return FAIL(4, f"net worth {input.net_worth} <= 0 (broken balance sheet)",
+                    nw_citation, confidence = HIGH)
+
+    // Rev 5 — §8.4-F step 4: an AR disclosing only a single lump total, with no Schedule
+    // III sub-category breakdown, gets an immateriality fast-path rather than an
+    // automatic hold, so a clearly-immaterial company is not needlessly blocked.
+    if input.contingent_liabilities_breakdown_available != true:
+        if input.contingent_liabilities is null:
+            return INCONCLUSIVE("Check 4: no contingent liabilities figure "
+                                 "(lump total or sub-category breakdown) available")
+        mismatch = assert_comparable(input, ["contingent_liabilities", "net_worth"])
+        if mismatch is not null:
+            return INCONCLUSIVE("Check 4: " + mismatch)
+
+        lump_pct = (input.contingent_liabilities / input.net_worth) * 100
+        (lump_citation, _) = compose_citation(input, ["contingent_liabilities", "net_worth"])
+        if lump_pct <= 5:
+            return PASS(4, f"contingent liabilities {lump_pct}% of net worth (<= 5%, "
+                           "immaterial — no Schedule III sub-category breakdown was "
+                           "disclosed, but the total is small enough that a litigation/"
+                           "routine split cannot change the verdict)",
+                        lump_citation, confidence = MEDIUM)
+        return INCONCLUSIVE(f"Check 4: contingent liabilities disclosed as a single total "
+                             f"({lump_pct}% of net worth) with no Schedule III sub-category "
+                             "breakdown — litigation/routine split not available (§8.4-F)")
+
+    // Primary path: the litigation/routine breakdown was extracted per §8.4-F.
+    if input.litigation_claims_exposure is null:
+        return INCONCLUSIVE("Check 4: breakdown flagged available but "
+                             "litigation_claims_exposure missing")
+
+    mismatch = assert_comparable(input, ["litigation_claims_exposure", "net_worth"])
     if mismatch is not null:
         return INCONCLUSIVE("Check 4: " + mismatch)
 
     (citation, missing_prov) = compose_citation(input,
-        ["contingent_liabilities", "net_worth"])
+        ["litigation_claims_exposure", "routine_guarantee_exposure", "net_worth"])
 
-    if input.net_worth <= 0:
-        return FAIL(4, f"net worth {input.net_worth} <= 0 (broken balance sheet)",
+    ratio_pct = (input.litigation_claims_exposure / input.net_worth) * 100
+
+    if ratio_pct > 20:
+        return FAIL(4, f"litigation & claims exposure {ratio_pct}% of net worth vs 20% "
+                       "limit (routine guarantees/LCs/bills discounted excluded, §8.4-F)",
                     citation, confidence = HIGH)
 
-    ratio_pct = (input.contingent_liabilities / input.net_worth) * 100
-
-    if ratio_pct > 15:
-        return FAIL(4, f"contingent liabilities {ratio_pct}% of net worth vs 15% limit",
-                    citation, confidence = HIGH)
-
-    return PASS(4, f"contingent liabilities {ratio_pct}% of net worth (<= 15%)",
+    return PASS(4, f"litigation & claims exposure {ratio_pct}% of net worth (<= 20%); "
+                   "routine business-linked exposure excluded from this ratio per §8.4-F",
                 citation, confidence = HIGH)
 7. Check 5 — Show Me the Cash (Section A Q5)
+
+Rev 5 (Rules §2 Check 5 / §8.4-G): the flat 0.80 CFO/PAT threshold and flat
+≥3-of-5-years-negative trigger are replaced by working-capital-cycle tiering (§2g),
+a global 0.50 hard floor, and an explicit "not applicable" path for lending
+institutions, whose CFO is dominated by loan-book/deposit movement rather than
+P&L-linked working capital.
+
+Rev 6 (Rules §2 Check 5 / §8.4-H): every disqualifying trigger below except
+cumulative PAT ≤ 0 now routes through verify_use_of_funds() (§2h) before resolving
+to FAIL. A verified-benign shortfall becomes a PASS carrying has_mandatory_warning
+= true, never a silent PASS and never an automatic FAIL either.
+
+PASS() below accepts an optional has_mandatory_warning argument (informal pseudocode
+convention, same as every other named constructor in this spec) — omitted or false
+everywhere except the one Rev 6 return path that sets it true.
+
 function check5_cash_conversion(input: CompanyInput) -> CheckResult:
+
+    if input.working_capital_cycle_tier is null:
+        return INCONCLUSIVE("Check 5: missing working-capital-cycle classification (Rules §8.4-G)")
+
+    if input.working_capital_cycle_tier == LENDING_INSTITUTION_NA:
+        return INCONCLUSIVE("Check 5: not applicable — CFO/PAT is not a meaningful metric "
+                             "for lending institutions (banks/NBFCs/insurers); their operating "
+                             "cash flow is dominated by loan-book/deposit movement, not "
+                             "P&L-linked working capital (Rules §8.4-G). Asset-quality trend "
+                             "(GNPA/NNPA) is a domain-appropriate substitute, out of this "
+                             "spec's scope.")
 
     if input.cfo_last_5y is null or input.pat_last_5y is null:
         return INCONCLUSIVE("Check 5: missing 5-year CFO and/or PAT series")
@@ -562,13 +802,38 @@ function check5_cash_conversion(input: CompanyInput) -> CheckResult:
     if mismatch is not null:
         return INCONCLUSIVE("Check 5: " + mismatch)
 
+    thresholds = working_capital_cycle_thresholds(input.working_capital_cycle_tier)   // §2g
+
     negative_cfo_years = count(y in input.cfo_last_5y where y < 0)
     cumulative_cfo = sum(input.cfo_last_5y)
     cumulative_pat = sum(input.pat_last_5y)
+    cfo_pat_ratio = (cumulative_pat > 0) ? (cumulative_cfo / cumulative_pat) : null
 
-    disqualifying_event = (negative_cfo_years >= 3) or (cumulative_pat <= 0) or (
-        cumulative_pat > 0 and (cumulative_cfo / cumulative_pat) < 0.80
-    )
+    // Rev 6: cumulative_pat <= 0 is the one trigger with no verification path — Rules
+    // §2 Check 5's "never overridden" backstop.
+    pat_negative_or_zero = (cumulative_pat <= 0)
+
+    // The three triggers eligible for the §8.4-H override. Every tier's floor
+    // (0.65/0.75/0.85) already sits above 0.50, so hard_floor_breach and
+    // tier_floor_breach are not mutually exclusive — both are tracked separately so
+    // the FAIL/warning message can correctly name whichever actually fired.
+    negative_years_breach = (negative_cfo_years >= thresholds.negative_years_trigger)
+    hard_floor_breach = (cfo_pat_ratio is not null and cfo_pat_ratio < 0.50)
+    tier_floor_breach = (cfo_pat_ratio is not null and cfo_pat_ratio < thresholds.cfo_pat_floor)
+    any_verifiable_trigger = negative_years_breach or hard_floor_breach or tier_floor_breach
+
+    // Rev 6: attempt verification at most once (§8.4-H step 6), only if a verifiable
+    // trigger fired and there is an actual shortfall to explain. A PAT<=0 company is
+    // never routed here — that path is unconditional regardless of verification.
+    verification = null
+    if any_verifiable_trigger and not pat_negative_or_zero:
+        verification = verify_use_of_funds(input, cumulative_pat, cumulative_cfo)   // §2h
+    verified_ok = (verification is not null and verification.verified == true)
+
+    // Post-verification disqualifying signal — what the track-record guard and the
+    // normal-window branch both consume below. A verified-benign shortfall is not
+    // disqualifying; an unverified or unverifiable one still is, exactly as pre-Rev-6.
+    disqualifying_event = pat_negative_or_zero or (any_verifiable_trigger and not verified_ok)
 
     guard = apply_track_record_guard(
         years_required = 5,
@@ -590,25 +855,53 @@ function check5_cash_conversion(input: CompanyInput) -> CheckResult:
     elif guard is not null:
         return build_result(5, guard, finding_suffix = suffix)
 
-    (citation, missing_prov) = compose_citation(input, ["cfo_last_5y", "pat_last_5y"])
+    (citation, missing_prov) = compose_citation(input,
+        ["cfo_last_5y", "pat_last_5y", "working_capital_cycle_tier"])
 
-    if negative_cfo_years >= 3:
-        return FAIL(5, f"{negative_cfo_years} of last 5 years had negative CFO (>= 3 triggers fail)" + suffix,
-                    citation, confidence = HIGH)
-
-    if cumulative_pat <= 0:
+    if pat_negative_or_zero:
         return FAIL(5, f"cumulative 5-yr PAT {cumulative_pat} <= 0" + suffix, citation, confidence = HIGH)
 
-    cfo_pat_ratio = cumulative_cfo / cumulative_pat
-    if cfo_pat_ratio < 0.80:
-        return FAIL(5, f"cumulative CFO/PAT ratio {cfo_pat_ratio} < 0.80" + suffix,
+    if any_verifiable_trigger:
+        trigger_desc = []
+        if negative_years_breach:
+            trigger_desc.append(f"{negative_cfo_years} of last 5 years had negative CFO "
+                                 f"(>= {thresholds.negative_years_trigger} triggers this sector's tier)")
+        if hard_floor_breach:
+            trigger_desc.append(f"CFO/PAT ratio {cfo_pat_ratio} < 0.50 global hard floor")
+        elif tier_floor_breach:
+            trigger_desc.append(f"CFO/PAT ratio {cfo_pat_ratio} < {thresholds.cfo_pat_floor} "
+                                 "sector tier threshold")
+        trigger_text = join("; ", trigger_desc)
+
+        if verified_ok:
+            (uof_citation, _) = compose_citation(input,
+                ["cfo_last_5y", "pat_last_5y", "working_capital_cycle_tier",
+                 "revenue_last_5y", "cumulative_working_capital_change_5y",
+                 "liquid_cushion_first_year", "liquid_cushion_last_year"])
+            return PASS(5, "WARNING — " + trigger_text + ", but verified as business-"
+                           "expansion-linked per Rules §8.4-H: " + join("; ", verification.notes) + suffix,
+                        uof_citation, confidence = HIGH, has_mandatory_warning = true)
+
+        // Not verified — verification is either null (data missing) or ran and failed.
+        if verification is null:
+            return FAIL(5, trigger_text + " — use-of-funds verification (§8.4-H) could not be "
+                           "attempted: revenue_last_5y / cumulative_working_capital_change_5y / "
+                           "liquid_cushion figures not available" + suffix,
+                        citation, confidence = HIGH)
+        return FAIL(5, trigger_text + " — use-of-funds verification (§8.4-H) attempted and did "
+                       "not clear: " + join("; ", verification.notes) + suffix,
                     citation, confidence = HIGH)
 
-    return PASS(5, f"CFO/PAT ratio {cfo_pat_ratio} (>= 0.80), "
-                   f"{negative_cfo_years} negative-CFO years (<= 2)" + suffix,
+    return PASS(5, f"CFO/PAT ratio {cfo_pat_ratio} (>= {thresholds.cfo_pat_floor} tier threshold), "
+                   f"{negative_cfo_years} negative-CFO years "
+                   f"(< {thresholds.negative_years_trigger} trigger)" + suffix,
                 citation, confidence = HIGH)
 
 New in Revision 3. suffix is now attached to every return path exactly as in Check 1 — this is the specific fix for the v1 gap where a FAIL reached via the guard's "a short history can still fail" branch gave no indication in its own finding text that only 4 of 5 years were used. gap_note additionally distinguishes "5 years genuinely weren't obtainable after actually looking" from "the pipeline stopped at whatever the uploaded source documents happened to contain" — the latter is a process gap the renderer and the analyst should be able to see and close on a re-run, per Rules §8.4-C. confidence here stays HIGH throughout: Check 5's fields have no RetrievalTier (there is no fallback source for CFO/PAT the way there is for a pledge trend or a regulatory search — either the audited cash flow statement has the figure or it doesn't), so the years-available suffix is the correct and sufficient disclosure mechanism for this check, not a confidence downgrade.
+
+New in Revision 6. The three verifiable triggers are now tracked as independent booleans rather than folded straight into disqualifying_event, specifically so the FAIL/warning finding text can name exactly which one(s) fired — this matters more now than pre-Rev-6 because a reader deciding whether an override "should" have applied needs to know what was actually being excused. verify_use_of_funds() runs at most once per call (Rules §8.4-H step 6): if multiple triggers fire together (e.g. both a ratio breach and the negative-years count, as in the GRSE case that prompted this revision), one verification result governs the finding for all of them, since they are different symptoms of the same underlying cash-timing question, not independent claims each requiring its own evidence. has_mandatory_warning is the only place in this entire spec where a check's own CheckResult carries a flag with no equivalent in Revisions 1-5 — Phase1Result.warning_checks (§0) surfaces it to the renderer exactly as low_confidence_checks already does for confidence, so a warning can never silently disappear between the engine and the investor-facing text.
+
+New in Revision 5. The lending-institution short-circuit runs before the 5-year-series check — a bank's INCONCLUSIVE "not applicable" verdict does not depend on whether its CFO/PAT data happens to be available; the check is inapplicable either way. thresholds is looked up once per call from working_capital_cycle_tier (§2g) and threaded through every subsequent comparison, replacing the old hardcoded 3 / 0.80 literals. Both fee/ratio floors (global 0.50, tier-specific) are evaluated as part of the same disqualifying_event expression the track-record guard consumes, so a short-history FAIL still correctly fires on either floor exactly as it did pre-Rev-5 for the flat threshold.
 
 8. Check 6 — Executive Stability (Section A Q6)
 function check6_executive_stability(input: CompanyInput) -> CheckResult:
@@ -678,6 +971,7 @@ function run_phase1(input: CompanyInput, prior: Phase1Result | null) -> Phase1Re
     failing = [r.check_id for r in results if r.status == FAIL]
     inconclusive = [r.check_id for r in results if r.status == INCONCLUSIVE]
     low_confidence = [r.check_id for r in results if r.confidence != HIGH]   // Rev 3
+    warning = [r.check_id for r in results if r.has_mandatory_warning == true]   // Rev 6
 
     if failing is non-empty:
         verdict = REJECT
@@ -703,6 +997,7 @@ function run_phase1(input: CompanyInput, prior: Phase1Result | null) -> Phase1Re
         failing_checks: failing,
         inconclusive_checks: inconclusive,
         low_confidence_checks: low_confidence,   // Rev 3
+        warning_checks: warning,   // Rev 6
         revision: (prior is null) ? 1 : prior.revision + 1,
         supersedes: (prior is null) ? null : prior.result_id,
         input_digest: hash(input),
@@ -717,7 +1012,7 @@ Yes	—	REJECT
 No	Yes	HOLD_INCONCLUSIVE
 No	No	CLEARED_TO_PHASE_2
 
-FAIL always dominates INCONCLUSIVE — a stock is never "held" when it has already failed something; it is rejected outright. low_confidence_checks never participates in this table — a low-confidence finding is still a finding, and does not on its own turn a PASS into a HOLD or a FAIL. Its only job is to force the renderer (§10) to disclose it.
+FAIL always dominates INCONCLUSIVE — a stock is never "held" when it has already failed something; it is rejected outright. low_confidence_checks never participates in this table — a low-confidence finding is still a finding, and does not on its own turn a PASS into a HOLD or a FAIL. Its only job is to force the renderer (§10) to disclose it. Rev 6: warning_checks behaves the same way — a check only lands in warning_checks after already resolving to PASS via the §8.4-H override, so it cannot turn a CLEARED_TO_PHASE_2 into anything else; its only job, like low_confidence_checks, is to force the renderer to disclose it (§10).
 
 Re-evaluation and supersession. Unchanged from Revision 2: a HOLD_INCONCLUSIVE is a temporary state by design; run_phase1() is re-run when a missing field is supplied, with revision = prior + 1 and supersedes = prior.result_id. Rev 3 addition: the same applies when a FALLBACK-tier field is later upgraded to PRIMARY (e.g. the 4-quarter pledge series becomes available after initially only a single figure could be sourced) — this is not a null-to-non-null resolution, so it would not have triggered re-evaluation under Revision 2's rule alone; confidence upgrades are now an explicit re-run trigger too.
 
@@ -733,6 +1028,7 @@ Stamp revision, generated_at, as_of_date and data_basis on every rendered artefa
 State the reporting basis in plain language on the investor view ("figures are on a consolidated basis") — rules §8.1 prefers consolidated, and a reader comparing this report to a standalone filing needs to know which they are holding.
 (New in Revision 3.) For every check_id in low_confidence_checks, render the plain-language confidence disclosure required by Rules §5 — not the word "confidence" or a raw MEDIUM/LOW tag, but a sentence naming what wasn't directly confirmed (see Rules §5c for the exact worked pattern). This is mandatory, not optional: a Phase1Result with a non-empty low_confidence_checks list and no corresponding disclosure in the rendered output is an incomplete render, on the same footing as a missing citation under point 4 above.
 (New in Revision 3.) Any finding string containing the "(based on N of M years)" suffix from build_finding_suffix() must have that suffix carried into the investor-facing text in plain language (Rules §1a) — e.g. "over the four years we had reports for" — not dropped during the plain-English rewrite.
+(New in Revision 6.) For every check_id in warning_checks, render the dedicated warning paragraph required by Rules §5d — its own clearly-labelled section, not a footnote or a clause folded into the "all six passed" summary. Must state the ratio/trigger that was breached, in plain language what that would normally mean, and the specific verified explanation (real revenue growth, the shortfall traced to working capital, no sign of hoarding) — see Rules §5d for the exact worked pattern. This is mandatory on the same footing as the low_confidence_checks disclosure above: a Phase1Result with a non-empty warning_checks list and no corresponding dedicated paragraph in the rendered output is an incomplete render.
 
 Keeping this as two layers (engine → renderer) means the engine can be unit-tested against numeric fixtures independent of prose, and the prose layer can change without touching pass/fail logic.
 
@@ -748,12 +1044,12 @@ Before wiring this into an app, run these fixtures through run_phase1() and conf
 5	Promoter holding 1% of company, pledge 30% of promoter holding, 0.3% of total shares	PASS on Check 2 w/ low-base note	low-base guard
 6	Company listed 2 years, no disqualifying events, Check 1/6	INCONCLUSIVE on 1 & 6, others normal	insufficient track record → HOLD
 7	Company listed 1 year but had a qualified audit opinion that year	REJECT (Check 1)	short history still fails on a real event
-8	CFO/PAT ratio 0.79 cumulative, 2 negative-CFO years	REJECT (Check 5, ratio trigger only)	independent OR triggers
+8	SHORT_CYCLE_ASSET_LIGHT company, CFO/PAT ratio 0.79 cumulative (< 0.85 tier floor), 2 negative-CFO years (< 3 trigger), no use-of-funds fields populated	REJECT (Check 5, ratio trigger only) — finding notes verification could not be attempted	independent OR triggers; Rev 5 — tier-qualified from the original v1 fixture so the 0.79 figure still fails under the new tiering (it would now PASS for a Moderate- or Long-cycle company — see fixture 32); Rev 6 — confirms a trigger with no use-of-funds data stays FAIL via verify_use_of_funds() returning null, not a free pass
 9	Missing net_worth entirely	HOLD_INCONCLUSIVE overall (assuming no other fails)	missing-data guard, never estimate
 10	Net worth = -500 (negative)	REJECT (Check 4)	broken balance sheet
-11	Legal fees 6x audit fees, opinion clean, no other issues	REJECT (Check 1, fee-ratio sub-trigger)	Check 1's 4th sub-condition in isolation
+11	Tier1 (Financial Services) company, legal fees 1.6% of revenue (> 1.35% flag threshold), opinion clean, no other issues	REJECT (Check 1, fee-anomaly sub-trigger)	Check 1's 4th sub-condition in isolation, Rev 4 revenue-normalized version
 12	years_of_track_record_available = null, everything else clean and populated	HOLD_INCONCLUSIVE (Checks 1 & 6)	unknown history must not read as 0 years, nor as a sufficient window
-13	audit_fees = 0, opinion clean, no other issues	HOLD_INCONCLUSIVE (Check 1)	regression guard — an uncomputable sub-check must never produce a FAIL
+13	audit_fees = 0, revenue/industry_sector/legal_fees all populated and within sector band, opinion clean, no other issues	CLEARED_TO_PHASE_2 (assuming others pass) — Rev 4: audit_fees is no longer required, so a zero/missing audit_fees alone no longer forces INCONCLUSIVE	regression guard, updated for Rev 4 — an uncomputable *secondary* observation must never block a PASS reached on the primary revenue-normalized test
 14	RPT note tagged CONSOLIDATED, revenue tagged STANDALONE	HOLD_INCONCLUSIVE (Check 3)	basis-mismatch guard
 15	contingent_liabilities period FY24, net_worth period FY23	HOLD_INCONCLUSIVE (Check 4)	period-mismatch guard
 16	Promoter holding 3%, pledge 40%, pledged_pct_of_total_shares not reported	REJECT (Check 2) — derived 1.2% of total shares > 0.5%	§2c derivation + low-base FAIL path
@@ -764,6 +1060,24 @@ Before wiring this into an app, run these fixtures through run_phase1() and conf
 21	Check 1 regulatory_action.nature = NONE, retrieval_tier = FALLBACK (SEBI portal unreachable)	PASS (Check 1) if other sub-checks clear, confidence = MEDIUM	§8.4-A fallback disclosure on a PASS-contributing negative finding
 22	Check 6 restatement search finds an ESG/BRSR water-withdrawal restatement only, restatement_esg_only_excluded = true, restatement_of_past_accounts = false	PASS (Check 6), finding contains the ESG-exclusion note	§8.4-D disambiguation is visible, not just assumed
 23	Check 5 with only 3 years of CFO/PAT, no disqualifying event in those 3, years_5y_series_gap_checked = false	HOLD_INCONCLUSIVE (Check 5), finding/missing_data notes the §8.4-C completeness sub-step was not recorded as attempted	distinguishes "genuinely unavailable" from "no one looked further"
+24	Tier4 (Manufacturing) company, legal fees 0.35% of revenue (within 0.2%–0.3% sourced band, below the 0.45% flag threshold), legal/audit ratio 7x, opinion clean, no other issues	CLEARED_TO_PHASE_2 (Check 1 PASS), finding contains the secondary-ratio pass_note ("legal/audit fee ratio 7x is elevated but... not treated as a fail trigger")	Rev 4 — a high legal/audit ratio alone, with revenue-intensity inside the sector band, must PASS, not FAIL; validates the old v3 fixture 11 scenario now resolves the opposite way once revenue-normalized
+25	Tier4 company, legal fees jump 2.4x YoY, a disclosed litigation settlement is found in the Contingent Liabilities note, legal_fee_surge_explained = true	CLEARED_TO_PHASE_2 (Check 1 PASS), assuming legal_pct_revenue itself is within band	Rev 4 surge-gate — a >2x YoY increase with a disclosed, checked-for explanation must not fail on that basis alone
+26	Tier4 company, legal fees jump 2.4x YoY, no disclosed cause found, legal_fee_surge_explained = false	REJECT (Check 1, LEGAL_FEES_UNEXPLAINED_SURGE_OVER_2X_YOY)	Rev 4 surge-gate — an unexplained surge still fails exactly as it did pre-Rev 4
+27	Bank, litigation_claims_exposure = 2% of net worth, routine_guarantee_exposure = 850% of net worth (ordinary LC/guarantee/forex business), breakdown_available = true	CLEARED_TO_PHASE_2 (Check 4 PASS)	Rev 5 — the primary motivating case: under the pre-Rev-5 flat 15%-of-total rule this bank would have been an automatic REJECT purely from routine business; the split correctly excludes it
+28	EPC contractor, litigation_claims_exposure = 25% of net worth (disputed tax demand + contested claim), routine_guarantee_exposure = 300% of net worth (performance/bid bonds), breakdown_available = true	REJECT (Check 4, "litigation & claims exposure 25% of net worth vs 20% limit")	Rev 5 — a genuine litigation exposure still fails even for a sector with high routine guarantee volume; the split doesn't make Check 4 toothless, it makes it accurate
+29	contingent_liabilities (lump total) = 3% of net worth, breakdown_available = false	CLEARED_TO_PHASE_2 (Check 4 PASS, confidence MEDIUM)	Rev 5 — §8.4-F immateriality fast-path; a small undisclosed-breakdown total should not block a verdict
+30	contingent_liabilities (lump total) = 40% of net worth, breakdown_available = false	HOLD_INCONCLUSIVE (Check 4)	Rev 5 — same fast-path, opposite outcome; a large undisclosed-breakdown total is genuinely unresolved, not assumed either way
+31	Missing net_worth entirely (Rev 5 re-check of fixture 9's scenario)	HOLD_INCONCLUSIVE overall (assuming no other fails)	confirms fixture 9's missing-data guard still holds after the Rev 5 rewrite
+32	MODERATE_CYCLE company, CFO/PAT ratio 0.79 cumulative (>= 0.75 tier floor), 1 negative-CFO year (< 3 trigger)	CLEARED_TO_PHASE_2 (Check 5 PASS)	Rev 5 — the same 0.79 ratio that fails fixture 8's Short-cycle company correctly passes here; proves the tiering, not just a global loosening
+33	LONG_CYCLE_PROJECT_ACCOUNTING (EPC) company, CFO/PAT ratio 0.68 cumulative (>= 0.65 tier floor), 3 negative-CFO years (< 4 trigger)	CLEARED_TO_PHASE_2 (Check 5 PASS)	Rev 5 — a ratio and negative-year count that would fail every other tier is legitimate for this tier, per the sourced ~0.7x EPC benchmark
+34	Any working_capital_cycle_tier, CFO/PAT ratio 0.45 cumulative	REJECT (Check 5), finding text cites the global 0.50 hard floor, not the tier threshold	Rev 5 — confirms the hard-floor message routing fires ahead of the tier-specific message even though both would fail here
+35	Bank (LENDING_INSTITUTION_NA), full clean 5-year CFO/PAT series available	HOLD_INCONCLUSIVE (Check 5), finding states "not applicable... lending institutions"	Rev 5 — the not-applicable path fires regardless of data availability; a bank is never routed through the ratio logic
+36	working_capital_cycle_tier = null, cfo_last_5y/pat_last_5y otherwise clean and populated	HOLD_INCONCLUSIVE (Check 5)	Rev 5 — missing classification guard; null tier is never silently treated as any specific tier
+37	LONG_CYCLE company, CFO/PAT 0.055 (breaches both the 0.50 hard floor and the 0.65 tier floor), 3 of 5 years negative CFO (below the tier's own 4-year trigger, so this alone would not fire), revenue_last_5y grows 4x over the window (>= 1.5x), cumulative_working_capital_change_5y covers 85% of the cumulative PAT-CFO gap (>= 60%), liquid cushion 22% of revenue in year 1 vs 19% in year 5 (flat-or-declining, passes the 10% tolerance)	CLEARED_TO_PHASE_2 (Check 5 PASS), has_mandatory_warning = true, warning_checks = [5], finding states both breached triggers and all three verified conditions	Rev 6 — the canonical case this revision was built for (the GRSE Sep-2026 live run); confirms one verify_use_of_funds() call correctly governs two simultaneously-fired triggers
+38	Same trigger scenario as fixture 37, but liquid cushion is 18% of revenue in year 1 vs 31% in year 5 (rising well past the 10% tolerance)	REJECT (Check 5), finding states condition (c) NOT met	Rev 6 — growth and working-capital coverage alone are not enough; evidence of the cash actually piling up blocks the override even when (a) and (b) both hold
+39	Same trigger scenario as fixture 37, but revenue_last_5y is flat across the window (growth ratio 1.05x, < 1.5x)	REJECT (Check 5), finding states condition (a) NOT met	Rev 6 — a working-capital-heavy shortfall without genuine revenue growth is not a credible "expansion" story; guards against dressing up receivable/inventory deterioration as growth
+40	Same trigger scenario as fixture 37, but cumulative_working_capital_change_5y covers only 25% of the cumulative PAT-CFO gap (< 60%)	REJECT (Check 5), finding states condition (b) NOT met	Rev 6 — the shortfall isn't actually a working-capital story here (e.g. driven by unusual provisions or finance costs instead); the override requires the CFO Statement's own reconciling line to do most of the explaining, not just a plausible-sounding narrative
+41	Same trigger scenario as fixture 37 (all three conditions verified), but only 4 of the required 5 years of CFO/PAT data are available	HOLD_INCONCLUSIVE (Check 5), finding contains "(based on 4 of the required 5 years)"	Rev 6 — proves the composition with the Rev 3 track-record guard: a verified-benign shortfall is "not disqualifying," so a short window correctly falls through to INCONCLUSIVE ("cannot pass prematurely") rather than either FAIL or a premature PASS-with-warning
 12. What this spec deliberately does not decide
 
 These are acquisition or product concerns, resolved in the implementation plan, and are listed here only so an implementer does not mistake their absence for an omission:
@@ -776,6 +1090,36 @@ When to re-run. Staleness, review SLAs, and re-scrape cadence are product decisi
 This file is derived entirely from Phase1-Rules.md. If a threshold, exception, or decision rule changes there, mirror the exact change here in the same edit — do not let the two drift. If an application is later generated from this spec, treat Phase1-Rules.md as the source of truth for policy and this file as the source of truth for implementation shape; neither should introduce a rule the other doesn't have.
 
 Revision history
+
+Revision 6 — a genuine, narrowly-scoped policy change to Check 5 only, adding an evidence-gated override rather than loosening any existing threshold. Prompted by a live Phase 1 run on GRSE (Sep 2026) that breached the Revision 5 hard floor (ratio 0.055 vs. a 0.50 floor) in a way a follow-up forensic trace of the Cash Flow Statement showed was overwhelmingly explained by working-capital absorption behind genuine revenue growth (revenue nearly quadrupled over the same window), not cash going missing — rejecting outright on the ratio alone, without ever asking where the shortfall went, was treating a symptom as the disease. Every item below traces to Phase1-Rules-v2.md §2 Check 5 and new §8.4-H:
+
+Change	Traces to
+CompanyInput: revenue_last_5y, cumulative_working_capital_change_5y, liquid_cushion_first_year, liquid_cushion_last_year added	Rules §8.4-H's three verification conditions — a direct AR/Screener extraction, not synthesized from other fields
+CheckResult.has_mandatory_warning; Phase1Result.warning_checks	Rules §5's new use-of-funds warning disclosure requirement and §8.4-H's "disclosed PASS, never silent" rule — same architectural pattern as Revision 3's confidence/low_confidence_checks pair
+verify_use_of_funds() (§2h)	Rules §8.4-H's three conditions (real growth, working-capital-covered shortfall, no hoarding), reproduced as a pure function returning null (not false) when it cannot be attempted, per the golden rule
+Check 5 rewritten: cumulative_pat <= 0 remains the sole unconditional trigger; the other three triggers (tier floor, 0.50 hard floor, negative-years count) now route through verify_use_of_funds() before resolving to FAIL; a verified-benign shortfall returns PASS with has_mandatory_warning = true and a finding string naming both the breached trigger(s) and the verification notes	Rules §2 Check 5, §8.4-H steps 4-6
+run_phase1() populates Phase1Result.warning_checks; decision table note extended to state warning_checks never affects verdict, same footing as low_confidence_checks	Rules §5's disclosure requirement; the check only ever reaches warning_checks after already resolving to PASS
+New §10 renderer requirement: dedicated warning paragraph for every check_id in warning_checks, per Rules §5d's worked pattern	Rules §5, new §5d worked example
+Fixture 8 annotated (confirms a trigger with no use-of-funds data stays FAIL, not a free pass); Fixtures 37-41 added (verified PASS-with-warning on the GRSE pattern; each of the three conditions failing individually; composition with the short-track-record guard)	Coverage for each item above
+
+Revision 5 — a genuine threshold/metric change to Check 4 and Check 5 only. Both replaced a single flat, industry-agnostic threshold with an industry/business-model-aware test, for the same underlying reason as Revision 4: a flat number applied identically to every sector breaks badly for the sectors whose business model differs most from the "typical" company the flat number was implicitly calibrated against (banks/NBFCs/EPC contractors for Check 4's routine guarantee volume; long-project-cycle and lending sectors for Check 5's cash-conversion timing). Every item below traces to Phase1-Rules-v2.md §2 Checks 4/5 and new §8.4-F / §8.4-G:
+
+Change	Traces to
+CompanyInput: litigation_claims_exposure, routine_guarantee_exposure, contingent_liabilities_breakdown_available added; contingent_liabilities retained as lump-total fallback only	Rules §2 Check 4 / §8.4-F — Schedule III already requires the sub-category breakdown; a blended total is not comparable across sectors
+CompanyInput: WorkingCapitalCycleTier enum, working_capital_cycle_tier added	Rules §2 Check 5 / §8.4-G — a separate classification axis from IndustrySector (§2f), since legal intensity and working-capital-cycle length classify the same company differently (e.g. IT is elevated-legal but short-cycle/asset-light)
+working_capital_cycle_thresholds() (§2g)	Rules §8.4-G's tier table, reproduced as data
+Check 4 rewritten: net_worth <= 0 unchanged; primary test now litigation_claims_exposure vs. a single 20%-of-net-worth threshold; routine_guarantee_exposure excluded from the ratio entirely; lump-total immateriality fast-path (<=5% of net worth) and INCONCLUSIVE fallback for undisclosed breakdowns above that	Rules §2 Check 4, §8.4-F steps 1-4
+Check 5 rewritten: lending-institution short-circuit to INCONCLUSIVE before the data-availability check; tier-specific cfo_pat_floor and negative_years_trigger replace the flat 0.80 / 3-of-5 literals; explicit global 0.50 hard-floor check retained as a distinctly-labelled backstop alongside the tier floor	Rules §2 Check 5, §8.4-G
+Fixture 8 tier-qualified (SHORT_CYCLE_ASSET_LIGHT); Fixtures 27-36 added (BFSI routine-exclusion PASS, genuine-litigation FAIL, lump-total fast-path PASS/INCONCLUSIVE, moderate-cycle PASS proving the same ratio that fails fixture 8 passes here, long-cycle EPC tolerance, hard-floor message routing, lending not-applicable, missing-tier guard)	Coverage for each item above
+
+Revision 4 — a genuine threshold/metric change to Check 1.4 only. The prior "legal fees > 5x audit fees, or > 2x YoY surge" rule was a flat, industry-agnostic multiple with no published benchmark behind the specific ratio, and audit fees are a poor denominator on their own (fixed-cost floor, so the ratio is size-confounded — see Phase1-Rules-v2.md §8.4-E for full sourcing and rationale, including the caveat that the industry bands are global/directional, not India-calibrated). Every item below traces to Phase1-Rules-v2.md §2 Check 1.4 and new §8.4-E:
+
+Change	Traces to
+IndustrySector enum; industry_sector and legal_fee_surge_explained added to CompanyInput	Rules §8.4-E — the primary test needs a sector classification; the surge test needs a place to record whether a disclosed cause was found
+sector_flag_threshold() (§2f)	Rules §8.4-E's industry-tiered band table, reproduced as data
+Check 1's required-fields list: audit_fees removed, revenue and industry_sector added	Rules §2 Check 1.4 — audit_fees is now secondary/non-binding; the primary test runs on legal_pct_revenue
+Check 1's fee-anomaly sub-check rewritten: primary test is legal_pct_revenue vs. sector_flag_threshold(); surge test gated on legal_fee_surge_explained; legal/audit ratio demoted to a pass_notes observation	Rules §2 Check 1.4(a)(b)(c)
+Fixture 11 rewritten (sector-band trigger, not a flat ratio); Fixture 13 updated (audit_fees=0 no longer forces INCONCLUSIVE); Fixtures 24–26 added (ratio-inside-band PASS, explained-surge PASS, unexplained-surge FAIL)	Coverage for each item above
 
 Revision 3 — sourcing-transparency changes only; no policy threshold, exception, or decision rule was altered, and each item below traces to a gap identified during the Cyient DLM live run (Sep 2026) and the corresponding Phase1-Rules.md v2 requirement:
 

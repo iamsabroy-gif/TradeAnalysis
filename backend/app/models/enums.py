@@ -74,3 +74,43 @@ class PdfClass(str, Enum):
     NATIVE_TEXT = "NATIVE_TEXT"
     HYBRID = "HYBRID"
     SCANNED_IMAGE_ONLY = "SCANNED_IMAGE_ONLY"
+
+
+class RetrievalTier(str, Enum):
+    """
+    Rev 3 — Phase1-Algorithms-v3.md §0. Distinguishes "this field is populated"
+    from "this field came from the primary source §8.4 requires".
+    """
+
+    PRIMARY = "PRIMARY"
+    FALLBACK = "FALLBACK"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class IndustrySector(str, Enum):
+    """
+    Rev 4 — Phase1-Algorithms-v3.md §0 / Phase1-Rules-v2.md §8.4-E.
+    Sector tiers feeding Check 1's revenue-normalized legal-fee-anomaly test.
+    """
+
+    TIER1_FINANCIAL_SERVICES = "TIER1_FINANCIAL_SERVICES"
+    TIER2_PHARMA_HEALTHCARE_IT = "TIER2_PHARMA_HEALTHCARE_IT"
+    TIER3_REGULATED_GOVT_TELECOM_ENERGY = "TIER3_REGULATED_GOVT_TELECOM_ENERGY"
+    TIER4_MANUFACTURING_INDUSTRIALS = "TIER4_MANUFACTURING_INDUSTRIALS"
+    TIER5_RETAIL_FMCG_CONSUMER = "TIER5_RETAIL_FMCG_CONSUMER"
+    TIER_OTHER_UNCLASSIFIED = "TIER_OTHER_UNCLASSIFIED"
+
+
+class WorkingCapitalCycleTier(str, Enum):
+    """
+    Rev 5 — Phase1-Algorithms-v3.md §0 / Phase1-Rules-v2.md §8.4-G.
+    A separate classification axis from IndustrySector: legal-spend intensity
+    (Check 1) and working-capital-cycle length (Check 5) classify the same
+    company differently — never conflate the two enums.
+    """
+
+    LONG_CYCLE_PROJECT_ACCOUNTING = "LONG_CYCLE_PROJECT_ACCOUNTING"
+    MODERATE_CYCLE = "MODERATE_CYCLE"
+    SHORT_CYCLE_ASSET_LIGHT = "SHORT_CYCLE_ASSET_LIGHT"
+    LENDING_INSTITUTION_NA = "LENDING_INSTITUTION_NA"
+    TIER_OTHER_UNCLASSIFIED = "TIER_OTHER_UNCLASSIFIED"

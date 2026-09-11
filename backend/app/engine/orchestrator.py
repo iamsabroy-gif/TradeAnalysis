@@ -9,7 +9,7 @@ import hashlib
 from typing import List, Optional
 import uuid
 
-from backend.app.models.enums import CheckStatus, Verdict
+from backend.app.models.enums import CheckStatus, Confidence, Verdict
 from backend.app.models.schemas import CheckResult, CompanyInput, Phase1Result
 from .checks import (
     check1_auditor_regulator,
@@ -48,6 +48,12 @@ def run_phase1(
 
     failing = [r.check_id for r in results if r.status == CheckStatus.FAIL]
     inconclusive = [r.check_id for r in results if r.status == CheckStatus.INCONCLUSIVE]
+    # Rev 3 — Phase1-Algorithms-v3.md §9: surfaced regardless of PASS/FAIL so
+    # the renderer's confidence-labelling requirement can't be skipped.
+    low_confidence = [r.check_id for r in results if r.confidence != Confidence.HIGH]
+    # Rev 6 — never affects verdict; a check only lands here after already
+    # resolving to PASS via the §8.4-H override.
+    warning = [r.check_id for r in results if r.has_mandatory_warning]
 
     # 3. Decision table (Phase1-Rules.md §3 / Phase1-Algorithms.md §9)
     if failing:
@@ -84,6 +90,8 @@ def run_phase1(
         verdict=verdict,
         failing_checks=failing,
         inconclusive_checks=inconclusive,
+        low_confidence_checks=low_confidence,
+        warning_checks=warning,
         revision=revision,
         supersedes=supersedes,
         input_digest=input_digest,

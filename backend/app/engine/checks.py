@@ -1,6 +1,6 @@
 """
 Check functions 1 to 6 for Phase 1 Gatekeeper.
-Strictly maps to Phase1-Algorithms.md §3 to §8.
+Strictly maps to Phase1-Algorithms-v3.md §3 to §8.
 Pure functions — zero network or disk I/O.
 """
 
@@ -10,38 +10,56 @@ from backend.app.models.enums import (
     AuditOpinion,
     CheckStatus,
     CompanyType,
+    Confidence,
     RegulatoryNature,
     ReportingBasis,
+    RetrievalTier,
+    WorkingCapitalCycleTier,
 )
 from backend.app.models.schemas import CheckResult, CompanyInput
 from .helpers import (
     apply_track_record_guard,
     assert_comparable,
+    build_finding_suffix,
     compose_citation,
     derive_pledged_pct_of_total_shares,
+    roll_up_confidence,
+    sector_flag_threshold,
+    verify_use_of_funds,
+    working_capital_cycle_thresholds,
 )
+
+_DISQUALIFYING_REGULATORY_NATURES = {
+    RegulatoryNature.FRAUD,
+    RegulatoryNature.SIPHONING,
+    RegulatoryNature.MANIPULATION,
+    RegulatoryNature.ACCOUNTING_IRREGULARITY,
+}
 
 
 def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
     """
     Check 1 — Auditor & Regulator Integrity (Section A Q1)
-    Phase1-Algorithms.md §3
+    Phase1-Algorithms-v3.md §3. Rev 4: the fee-anomaly sub-check is now a
+    revenue-normalized, industry-tiered test (Rules §2 Check 1.4 / §8.4-E),
+    not a flat multiple of audit fees. audit_fees is secondary/non-binding.
     """
     fields_used = [
         "audit_opinion",
         "auditor_resigned_mid_tenure_last_3y",
         "regulatory_action",
         "legal_fees",
-        "audit_fees",
+        "revenue",
+        "industry_sector",
     ]
 
-    # Required fields null check
     if (
         input_data.auditor_resigned_mid_tenure_last_3y is None
         or input_data.audit_opinion is None
         or input_data.regulatory_action.active_or_past_5y is None
         or input_data.legal_fees is None
-        or input_data.audit_fees is None
+        or input_data.revenue is None
+        or input_data.industry_sector is None
     ):
         return CheckResult(
             check_id=1,
@@ -50,27 +68,28 @@ def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
             reason_code="CHECK_1_DATA_MISSING",
             missing_data=(
                 "Check 1: missing one or more of [auditor resignation history, "
-                "audit opinion, regulatory action status, legal/audit fee figures]"
+                "audit opinion, regulatory action status, legal fees, revenue, "
+                "industry sector classification]"
             ),
             fields_used=fields_used,
         )
 
+    years_available = input_data.years_of_track_record_available
     disqualifying_event_found = (
         input_data.auditor_resigned_mid_tenure_last_3y is True
         or input_data.audit_opinion != AuditOpinion.CLEAN
-        or input_data.regulatory_action.nature
-        in {
-            RegulatoryNature.FRAUD,
-            RegulatoryNature.SIPHONING,
-            RegulatoryNature.MANIPULATION,
-            RegulatoryNature.ACCOUNTING_IRREGULARITY,
-        }
+        or input_data.regulatory_action.nature in _DISQUALIFYING_REGULATORY_NATURES
     )
 
     guard = apply_track_record_guard(
         years_required=3,
-        years_available=input_data.years_of_track_record_available,
+        years_available=years_available,
         disqualifying_event_found=disqualifying_event_found,
+    )
+    suffix = build_finding_suffix(3, years_available)
+    confidence = roll_up_confidence(
+        fields_used,
+        {"regulatory_action": input_data.regulatory_action.retrieval_tier},
     )
     if guard is not None:
         citation, _ = compose_citation(input_data, fields_used)
@@ -78,25 +97,28 @@ def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
             return CheckResult(
                 check_id=1,
                 status=CheckStatus.FAIL,
-                finding="Disqualifying auditor/regulator issue found despite short track record",
+                finding="Disqualifying auditor/regulator issue found despite short track record" + suffix,
                 reason_code="AUDITOR_DISQUALIFYING_SHORT_HISTORY",
                 fields_used=fields_used,
                 citation=citation,
+                confidence=confidence,
             )
         return CheckResult(
             check_id=1,
             status=CheckStatus.INCONCLUSIVE,
             finding="Check 1: insufficient track record (only "
-            f"{input_data.years_of_track_record_available if input_data.years_of_track_record_available is not None else 'unknown'} "
-            "years available vs 3 required)",
+            f"{years_available if years_available is not None else 'unknown'} "
+            "years available vs 3 required)" + suffix,
             reason_code="INSUFFICIENT_TRACK_RECORD",
             missing_data="Track record length not established or < 3 years",
             fields_used=fields_used,
             citation=citation,
+            confidence=confidence,
         )
 
     fail_reasons: List[str] = []
     inconclusive_notes: List[str] = []
+    pass_notes: List[str] = []
 
     if input_data.auditor_resigned_mid_tenure_last_3y is True:
         fail_reasons.append("AUDITOR_RESIGNED_MID_TENURE")
@@ -106,34 +128,46 @@ def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
 
     if (
         input_data.regulatory_action.active_or_past_5y is True
-        and input_data.regulatory_action.nature
-        in {
-            RegulatoryNature.FRAUD,
-            RegulatoryNature.SIPHONING,
-            RegulatoryNature.MANIPULATION,
-            RegulatoryNature.ACCOUNTING_IRREGULARITY,
-        }
+        and input_data.regulatory_action.nature in _DISQUALIFYING_REGULATORY_NATURES
     ):
         fail_reasons.append(f"REGULATORY_ACTION:{input_data.regulatory_action.nature.value}")
+    # Note: ROUTINE_PROCEDURAL nature is explicitly excluded — not a fail trigger.
 
-    # Fee-ratio sub-check comparability guard
-    fee_mismatch = assert_comparable(input_data, ["legal_fees", "audit_fees"])
+    # Fee-anomaly sub-check — Rev 4 (Rules §2 Check 1.4 / §8.4-E). Primary test
+    # is revenue-normalized and industry-tiered; audit-fee ratio is a
+    # non-binding secondary observation only.
+    fee_mismatch = assert_comparable(input_data, ["legal_fees", "revenue"])
     if fee_mismatch is not None:
-        inconclusive_notes.append(f"legal/audit fee ratio not computable: {fee_mismatch}")
-    elif input_data.audit_fees > 0:
-        ratio = input_data.legal_fees / input_data.audit_fees
+        inconclusive_notes.append(f"legal-fee-to-revenue check not computable: {fee_mismatch}")
+    elif input_data.revenue <= 0:
+        inconclusive_notes.append("revenue is zero/negative; legal-fee-to-revenue check undefined")
+    else:
+        legal_pct_revenue = (input_data.legal_fees / input_data.revenue) * 100.0
+        flag_threshold = sector_flag_threshold(input_data.industry_sector)
         surge = (
             input_data.legal_fees_prior_year is not None
             and input_data.legal_fees_prior_year > 0
             and (input_data.legal_fees / input_data.legal_fees_prior_year) > 2.0
+            and input_data.legal_fee_surge_explained is not True
         )
-        if ratio > 5.0:
-            fail_reasons.append(f"LEGAL_FEES_EXCEED_5X_AUDIT_FEES:{round(ratio, 2)}x")
+        if legal_pct_revenue > flag_threshold:
+            fail_reasons.append(
+                f"LEGAL_PCT_REVENUE_EXCEEDS_SECTOR_BAND:{round(legal_pct_revenue, 3)}%>"
+                f"{flag_threshold}% ({input_data.industry_sector.value})"
+            )
         elif surge:
-            fail_reasons.append("LEGAL_FEES_SURGE_OVER_2X_YOY")
-    else:
-        # audit_fees is zero — ratio undefined, not a red flag (Algo spec rev 2 fix)
-        inconclusive_notes.append("audit_fees is zero; legal/audit ratio undefined")
+            fail_reasons.append("LEGAL_FEES_UNEXPLAINED_SURGE_OVER_2X_YOY")
+        else:
+            # Secondary corroboration only (Rules §8.4-E(c)) — never a
+            # standalone fail trigger.
+            secondary_mismatch = assert_comparable(input_data, ["legal_fees", "audit_fees"])
+            if secondary_mismatch is None and input_data.audit_fees is not None and input_data.audit_fees > 0:
+                ratio = input_data.legal_fees / input_data.audit_fees
+                if ratio > 5.0:
+                    pass_notes.append(
+                        f"legal/audit fee ratio {round(ratio, 2)}x is elevated but legal spend "
+                        "is within the sector's revenue-intensity band, so not treated as a fail trigger"
+                    )
 
     citation, _ = compose_citation(input_data, fields_used)
     basis = (
@@ -146,11 +180,12 @@ def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
         return CheckResult(
             check_id=1,
             status=CheckStatus.FAIL,
-            finding="; ".join(fail_reasons),
+            finding="; ".join(fail_reasons) + suffix,
             reason_code="; ".join(fail_reasons),
             fields_used=fields_used,
             citation=citation,
             basis=basis,
+            confidence=confidence,
         )
 
     if inconclusive_notes:
@@ -163,16 +198,22 @@ def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
             fields_used=fields_used,
             citation=citation,
             basis=basis,
+            confidence=confidence,
         )
 
+    note_suffix = (" — " + "; ".join(pass_notes)) if pass_notes else ""
     return CheckResult(
         check_id=1,
         status=CheckStatus.PASS,
-        finding="Clean opinion, no mid-tenure resignation, no disqualifying regulatory action, legal/audit fee ratio normal",
+        finding=(
+            "clean opinion, no mid-tenure resignation, no disqualifying regulatory action, "
+            "legal spend within sector revenue-intensity band" + note_suffix + suffix
+        ),
         reason_code="AUDITOR_REGULATOR_CLEAN",
         fields_used=fields_used,
         citation=citation,
         basis=basis,
+        confidence=confidence,
     )
 
 
@@ -246,6 +287,20 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
     low_base = input_data.promoter_holding_pct_of_company < 5.0
     citation, _ = compose_citation(input_data, fields_used)
 
+    # Rev 3 — confidence keyed on how pledged_pct_history_last_4q was sourced
+    # per Rules §8.4-B: an actual quarterly series (PRIMARY) vs a single
+    # figure plus a "no new pledge" filing standing in for a trend (FALLBACK).
+    confidence = roll_up_confidence(
+        fields_used,
+        {"pledged_pct_history_last_4q": input_data.pledged_pct_history_retrieval_tier},
+    )
+    trend_finding_note = ""
+    if input_data.pledged_pct_history_retrieval_tier == RetrievalTier.FALLBACK:
+        trend_finding_note = (
+            " (trend inferred from latest-quarter figure plus a no-new-pledge "
+            "compliance filing, not a confirmed quarterly series)"
+        )
+
     if low_base:
         pledged_of_total = derive_pledged_pct_of_total_shares(input_data)
         if pledged_of_total is None:
@@ -272,11 +327,12 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
                 finding=(
                     f"pledge material even after low-base adjustment: "
                     f"{input_data.pledged_pct_of_promoter_holding}% of promoter holding, "
-                    f"{pledged_of_total}% of total shares"
+                    f"{pledged_of_total}% of total shares" + trend_finding_note
                 ),
                 reason_code="LOW_BASE_PLEDGE_MATERIAL",
                 fields_used=fields_used + ["pledged_pct_of_total_shares"],
                 citation=citation,
+                confidence=confidence,
             )
         else:
             return CheckResult(
@@ -284,11 +340,12 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
                 status=CheckStatus.PASS,
                 finding=(
                     f"pledge % elevated ({input_data.pledged_pct_of_promoter_holding}%) due to small promoter base, "
-                    f"total shares pledged {pledged_of_total}% <= 0.5% — not treated as a red flag"
+                    f"total shares pledged {pledged_of_total}% <= 0.5% — not treated as a red flag" + trend_finding_note
                 ),
                 reason_code="LOW_BASE_PLEDGE_SAFE",
                 fields_used=fields_used + ["pledged_pct_of_total_shares"],
                 citation=citation,
+                confidence=confidence,
             )
 
     # Standard thresholds
@@ -296,29 +353,32 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
         return CheckResult(
             check_id=2,
             status=CheckStatus.FAIL,
-            finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% vs 10% limit (absolute threshold)",
+            finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% vs 10% limit (absolute threshold)" + trend_finding_note,
             reason_code="PLEDGE_EXCEEDS_10PCT",
             fields_used=fields_used,
             citation=citation,
+            confidence=confidence,
         )
 
     if trend_rising:
         return CheckResult(
             check_id=2,
             status=CheckStatus.FAIL,
-            finding="pledged % rising over last 2-4 quarters (or unexplained single-quarter spike > 2pp)",
+            finding="pledged % rising over last 2-4 quarters (or unexplained single-quarter spike > 2pp)" + trend_finding_note,
             reason_code="PLEDGE_RISING_TREND",
             fields_used=fields_used,
             citation=citation,
+            confidence=confidence,
         )
 
     return CheckResult(
         check_id=2,
         status=CheckStatus.PASS,
-        finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% (<= 10%), stable/declining over last 4 quarters",
+        finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% (<= 10%), stable/declining over last 4 quarters" + trend_finding_note,
         reason_code="PLEDGE_SAFE",
         fields_used=fields_used,
         citation=citation,
+        confidence=confidence,
     )
 
 
@@ -408,24 +468,116 @@ def check3_related_party(input_data: CompanyInput) -> CheckResult:
 def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
     """
     Check 4 — Contingent Liabilities (Section A Q4)
-    Phase1-Algorithms.md §6
+    Phase1-Algorithms-v3.md §6. Rev 5: the flat total-over-net-worth ratio is
+    replaced by a litigation-vs-routine split (Rules §2 Check 4 / §8.4-F) —
+    routine guarantee/LC/bills-discounted exposure is excluded entirely.
+    net_worth <= 0 remains an unconditional FAIL.
     """
-    fields_used = ["contingent_liabilities", "net_worth"]
-
-    if (
-        input_data.contingent_liabilities is None
-        or input_data.net_worth is None
-    ):
+    if input_data.net_worth is None:
         return CheckResult(
             check_id=4,
             status=CheckStatus.INCONCLUSIVE,
             finding="Check 4 inconclusive due to missing inputs",
             reason_code="CHECK_4_DATA_MISSING",
-            missing_data="Check 4: missing contingent liabilities or net worth figure",
+            missing_data="Check 4: missing net worth figure",
+            fields_used=["net_worth"],
+        )
+
+    if input_data.net_worth <= 0:
+        nw_citation, _ = compose_citation(input_data, ["net_worth"])
+        basis = (
+            input_data.provenance["net_worth"].basis
+            if "net_worth" in input_data.provenance
+            else ReportingBasis.NOT_APPLICABLE
+        )
+        return CheckResult(
+            check_id=4,
+            status=CheckStatus.FAIL,
+            finding=f"net worth {input_data.net_worth} <= 0 (broken balance sheet)",
+            reason_code="NEGATIVE_NET_WORTH",
+            fields_used=["net_worth"],
+            citation=nw_citation,
+            basis=basis,
+        )
+
+    # Rev 5 §8.4-F step 4: an AR disclosing only a lump total, with no
+    # Schedule III sub-category breakdown, gets an immateriality fast-path.
+    if input_data.contingent_liabilities_breakdown_available is not True:
+        fields_used = ["contingent_liabilities", "net_worth"]
+        if input_data.contingent_liabilities is None:
+            return CheckResult(
+                check_id=4,
+                status=CheckStatus.INCONCLUSIVE,
+                finding="Check 4 inconclusive due to missing inputs",
+                reason_code="CHECK_4_DATA_MISSING",
+                missing_data="Check 4: no contingent liabilities figure (lump total or sub-category breakdown) available",
+                fields_used=fields_used,
+            )
+
+        mismatch = assert_comparable(input_data, fields_used)
+        if mismatch is not None:
+            return CheckResult(
+                check_id=4,
+                status=CheckStatus.INCONCLUSIVE,
+                finding=f"Check 4: {mismatch}",
+                reason_code="CHECK_4_COMPARABILITY_MISMATCH",
+                missing_data=f"Check 4: {mismatch}",
+                fields_used=fields_used,
+            )
+
+        lump_pct = round((input_data.contingent_liabilities / input_data.net_worth) * 100.0, 2)
+        lump_citation, _ = compose_citation(input_data, fields_used)
+        basis = (
+            input_data.provenance["net_worth"].basis
+            if "net_worth" in input_data.provenance
+            else ReportingBasis.NOT_APPLICABLE
+        )
+        if lump_pct <= 5.0:
+            return CheckResult(
+                check_id=4,
+                status=CheckStatus.PASS,
+                finding=(
+                    f"contingent liabilities {lump_pct}% of net worth (<= 5%, immaterial — "
+                    "no Schedule III sub-category breakdown was disclosed, but the total is "
+                    "small enough that a litigation/routine split cannot change the verdict)"
+                ),
+                reason_code="CONTINGENT_LIABILITIES_LUMP_IMMATERIAL",
+                fields_used=fields_used,
+                citation=lump_citation,
+                basis=basis,
+                confidence=Confidence.MEDIUM,
+            )
+        return CheckResult(
+            check_id=4,
+            status=CheckStatus.INCONCLUSIVE,
+            finding=(
+                f"Check 4: contingent liabilities disclosed as a single total ({lump_pct}% of "
+                "net worth) with no Schedule III sub-category breakdown — litigation/routine "
+                "split not available (§8.4-F)"
+            ),
+            reason_code="CONTINGENT_LIABILITIES_BREAKDOWN_UNAVAILABLE",
+            missing_data=(
+                f"contingent liabilities disclosed as a single total ({lump_pct}% of net worth) "
+                "with no Schedule III sub-category breakdown"
+            ),
+            fields_used=fields_used,
+            citation=lump_citation,
+            basis=basis,
+        )
+
+    # Primary path: the litigation/routine breakdown was extracted per §8.4-F.
+    fields_used = ["litigation_claims_exposure", "routine_guarantee_exposure", "net_worth"]
+    if input_data.litigation_claims_exposure is None:
+        return CheckResult(
+            check_id=4,
+            status=CheckStatus.INCONCLUSIVE,
+            finding="Check 4 inconclusive due to missing inputs",
+            reason_code="CHECK_4_DATA_MISSING",
+            missing_data="Check 4: breakdown flagged available but litigation_claims_exposure missing",
             fields_used=fields_used,
         )
 
-    mismatch = assert_comparable(input_data, ["contingent_liabilities", "net_worth"])
+    mismatch = assert_comparable(input_data, ["litigation_claims_exposure", "net_worth"])
     if mismatch is not None:
         return CheckResult(
             check_id=4,
@@ -442,26 +594,17 @@ def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
         if "net_worth" in input_data.provenance
         else ReportingBasis.NOT_APPLICABLE
     )
+    ratio_pct = round((input_data.litigation_claims_exposure / input_data.net_worth) * 100.0, 2)
 
-    if input_data.net_worth <= 0:
+    if ratio_pct > 20.0:
         return CheckResult(
             check_id=4,
             status=CheckStatus.FAIL,
-            finding=f"net worth {input_data.net_worth} <= 0 (broken balance sheet)",
-            reason_code="NEGATIVE_NET_WORTH",
-            fields_used=fields_used,
-            citation=citation,
-            basis=basis,
-        )
-
-    ratio_pct = round((input_data.contingent_liabilities / input_data.net_worth) * 100.0, 2)
-
-    if ratio_pct > 15.0:
-        return CheckResult(
-            check_id=4,
-            status=CheckStatus.FAIL,
-            finding=f"contingent liabilities {ratio_pct}% of net worth vs 15% limit",
-            reason_code="CONTINGENT_LIABILITIES_EXCEED_15PCT",
+            finding=(
+                f"litigation & claims exposure {ratio_pct}% of net worth vs 20% limit "
+                "(routine guarantees/LCs/bills discounted excluded, §8.4-F)"
+            ),
+            reason_code="LITIGATION_CLAIMS_EXCEED_20PCT",
             fields_used=fields_used,
             citation=citation,
             basis=basis,
@@ -470,8 +613,11 @@ def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
     return CheckResult(
         check_id=4,
         status=CheckStatus.PASS,
-        finding=f"contingent liabilities {ratio_pct}% of net worth (<= 15%)",
-        reason_code="CONTINGENT_LIABILITIES_SAFE",
+        finding=(
+            f"litigation & claims exposure {ratio_pct}% of net worth (<= 20%); "
+            "routine business-linked exposure excluded from this ratio per §8.4-F"
+        ),
+        reason_code="LITIGATION_CLAIMS_SAFE",
         fields_used=fields_used,
         citation=citation,
         basis=basis,
@@ -481,9 +627,38 @@ def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
 def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
     """
     Check 5 — Show Me the Cash (Section A Q5)
-    Phase1-Algorithms.md §7
+    Phase1-Algorithms-v3.md §7. Rev 5: flat 0.80/>=3-of-5 rule replaced by
+    working-capital-cycle tiering (§8.4-G), a global 0.50 hard floor, and a
+    not-applicable path for lending institutions. Rev 6: every trigger except
+    cumulative PAT <= 0 routes through verify_use_of_funds() (§8.4-H) before
+    resolving to FAIL — a verified-benign shortfall becomes a PASS carrying
+    has_mandatory_warning = true.
     """
-    fields_used = ["cfo_last_5y", "pat_last_5y"]
+    if input_data.working_capital_cycle_tier is None:
+        return CheckResult(
+            check_id=5,
+            status=CheckStatus.INCONCLUSIVE,
+            finding="Check 5 inconclusive due to missing inputs",
+            reason_code="CHECK_5_DATA_MISSING",
+            missing_data="Check 5: missing working-capital-cycle classification (Rules §8.4-G)",
+            fields_used=["working_capital_cycle_tier"],
+        )
+
+    if input_data.working_capital_cycle_tier == WorkingCapitalCycleTier.LENDING_INSTITUTION_NA:
+        return CheckResult(
+            check_id=5,
+            status=CheckStatus.INCONCLUSIVE,
+            finding=(
+                "not applicable — CFO/PAT is not a meaningful metric for lending institutions "
+                "(banks/NBFCs/insurers); their operating cash flow is dominated by loan-book/"
+                "deposit movement, not P&L-linked working capital (Rules §8.4-G)"
+            ),
+            reason_code="LENDING_INSTITUTION_NOT_APPLICABLE",
+            missing_data="CFO/PAT not a meaningful metric for lending institutions",
+            fields_used=["working_capital_cycle_tier"],
+        )
+
+    fields_used = ["cfo_last_5y", "pat_last_5y", "working_capital_cycle_tier"]
 
     if input_data.cfo_last_5y is None or input_data.pat_last_5y is None:
         return CheckResult(
@@ -517,21 +692,34 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
             fields_used=fields_used,
         )
 
+    thresholds = working_capital_cycle_thresholds(input_data.working_capital_cycle_tier)
+
     negative_cfo_years = sum(1 for y in input_data.cfo_last_5y if y < 0)
     cumulative_cfo = sum(input_data.cfo_last_5y)
     cumulative_pat = sum(input_data.pat_last_5y)
+    cfo_pat_ratio = (cumulative_cfo / cumulative_pat) if cumulative_pat > 0 else None
 
-    disqualifying_event = (
-        (negative_cfo_years >= 3)
-        or (cumulative_pat <= 0)
-        or (cumulative_pat > 0 and (cumulative_cfo / cumulative_pat) < 0.80)
-    )
+    # Rev 6: cumulative_pat <= 0 is the one trigger with no verification path.
+    pat_negative_or_zero = cumulative_pat <= 0
+
+    negative_years_breach = negative_cfo_years >= thresholds["negative_years_trigger"]
+    hard_floor_breach = cfo_pat_ratio is not None and cfo_pat_ratio < 0.50
+    tier_floor_breach = cfo_pat_ratio is not None and cfo_pat_ratio < thresholds["cfo_pat_floor"]
+    any_verifiable_trigger = negative_years_breach or hard_floor_breach or tier_floor_breach
+
+    verification = None
+    if any_verifiable_trigger and not pat_negative_or_zero:
+        verification = verify_use_of_funds(input_data, cumulative_pat, cumulative_cfo)
+    verified_ok = verification is not None and verification["verified"] is True
+
+    disqualifying_event = pat_negative_or_zero or (any_verifiable_trigger and not verified_ok)
 
     guard = apply_track_record_guard(
         years_required=5,
-        years_available=n,  # actual series length
+        years_available=n,  # actual series length, not the company-wide field
         disqualifying_event_found=disqualifying_event,
     )
+    suffix = build_finding_suffix(5, n)
 
     citation, _ = compose_citation(input_data, fields_used)
     basis = (
@@ -541,11 +729,18 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
     )
 
     if guard is not None:
+        gap_note = ""
+        if n < 5:
+            gap_note = (
+                ""
+                if input_data.years_5y_series_gap_checked is True
+                else " — 5-year completeness sub-step (Rules §8.4-C) not recorded as attempted"
+            )
         if guard == CheckStatus.FAIL:
             return CheckResult(
                 check_id=5,
                 status=CheckStatus.FAIL,
-                finding=f"Disqualifying cash conversion failure found in {n}-year record",
+                finding=f"Disqualifying cash conversion failure found in {n}-year record" + suffix + gap_note,
                 reason_code="CASH_FLOW_DISQUALIFYING_SHORT_HISTORY",
                 fields_used=fields_used,
                 citation=citation,
@@ -554,43 +749,85 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
         return CheckResult(
             check_id=5,
             status=CheckStatus.INCONCLUSIVE,
-            finding=f"Check 5: insufficient track record (only {n} years available vs 5 required)",
+            finding=f"Check 5: insufficient track record (only {n} years available vs 5 required)" + suffix + gap_note,
             reason_code="INSUFFICIENT_TRACK_RECORD",
-            missing_data=f"insufficient track record (only {n} years available)",
+            missing_data=f"insufficient track record (only {n} years available)" + gap_note,
             fields_used=fields_used,
             citation=citation,
             basis=basis,
         )
 
-    if negative_cfo_years >= 3:
+    if pat_negative_or_zero:
         return CheckResult(
             check_id=5,
             status=CheckStatus.FAIL,
-            finding=f"{negative_cfo_years} of last 5 years had negative CFO (>= 3 triggers fail)",
-            reason_code="NEGATIVE_CFO_YEARS_GE_3",
-            fields_used=fields_used,
-            citation=citation,
-            basis=basis,
-        )
-
-    if cumulative_pat <= 0:
-        return CheckResult(
-            check_id=5,
-            status=CheckStatus.FAIL,
-            finding=f"cumulative 5-yr PAT {cumulative_pat} <= 0",
+            finding=f"cumulative 5-yr PAT {cumulative_pat} <= 0" + suffix,
             reason_code="CUMULATIVE_PAT_LE_0",
             fields_used=fields_used,
             citation=citation,
             basis=basis,
         )
 
-    cfo_pat_ratio = cumulative_cfo / cumulative_pat
-    if cfo_pat_ratio < 0.80:
+    if any_verifiable_trigger:
+        trigger_desc: List[str] = []
+        if negative_years_breach:
+            trigger_desc.append(
+                f"{negative_cfo_years} of last 5 years had negative CFO "
+                f"(>= {thresholds['negative_years_trigger']} triggers this sector's tier)"
+            )
+        if hard_floor_breach:
+            trigger_desc.append(f"CFO/PAT ratio {round(cfo_pat_ratio, 3)} < 0.50 global hard floor")
+        elif tier_floor_breach:
+            trigger_desc.append(
+                f"CFO/PAT ratio {round(cfo_pat_ratio, 3)} < {thresholds['cfo_pat_floor']} sector tier threshold"
+            )
+        trigger_text = "; ".join(trigger_desc)
+
+        if verified_ok:
+            uof_fields = fields_used + [
+                "revenue_last_5y",
+                "cumulative_working_capital_change_5y",
+                "liquid_cushion_first_year",
+                "liquid_cushion_last_year",
+            ]
+            uof_citation, _ = compose_citation(input_data, uof_fields)
+            return CheckResult(
+                check_id=5,
+                status=CheckStatus.PASS,
+                finding=(
+                    "WARNING — " + trigger_text + ", but verified as business-expansion-linked "
+                    "per Rules §8.4-H: " + "; ".join(verification["notes"]) + suffix
+                ),
+                reason_code="CASH_CONVERSION_VERIFIED_WARNING",
+                fields_used=uof_fields,
+                citation=uof_citation,
+                basis=basis,
+                has_mandatory_warning=True,
+            )
+
+        if verification is None:
+            return CheckResult(
+                check_id=5,
+                status=CheckStatus.FAIL,
+                finding=(
+                    trigger_text + " — use-of-funds verification (§8.4-H) could not be attempted: "
+                    "revenue_last_5y / cumulative_working_capital_change_5y / liquid_cushion "
+                    "figures not available" + suffix
+                ),
+                reason_code="CASH_CONVERSION_TRIGGER_UNVERIFIED",
+                fields_used=fields_used,
+                citation=citation,
+                basis=basis,
+            )
+
         return CheckResult(
             check_id=5,
             status=CheckStatus.FAIL,
-            finding=f"cumulative CFO/PAT ratio {round(cfo_pat_ratio, 2)} < 0.80",
-            reason_code="CFO_PAT_RATIO_LT_0_80",
+            finding=(
+                trigger_text + " — use-of-funds verification (§8.4-H) attempted and did not "
+                "clear: " + "; ".join(verification["notes"]) + suffix
+            ),
+            reason_code="CASH_CONVERSION_TRIGGER_FAILED_VERIFICATION",
             fields_used=fields_used,
             citation=citation,
             basis=basis,
@@ -599,7 +836,11 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
     return CheckResult(
         check_id=5,
         status=CheckStatus.PASS,
-        finding=f"CFO/PAT ratio {round(cfo_pat_ratio, 2)} (>= 0.80), {negative_cfo_years} negative-CFO years (<= 2)",
+        finding=(
+            f"CFO/PAT ratio {round(cfo_pat_ratio, 3) if cfo_pat_ratio is not None else cfo_pat_ratio} "
+            f"(>= {thresholds['cfo_pat_floor']} tier threshold), {negative_cfo_years} negative-CFO years "
+            f"(< {thresholds['negative_years_trigger']} trigger)" + suffix
+        ),
         reason_code="CASH_CONVERSION_HEALTHY",
         fields_used=fields_used,
         citation=citation,
@@ -632,61 +873,81 @@ def check6_executive_stability(input_data: CompanyInput) -> CheckResult:
         or input_data.restatement_of_past_accounts is True
     )
 
+    years_available = input_data.years_of_track_record_available
     guard = apply_track_record_guard(
         years_required=3,
-        years_available=input_data.years_of_track_record_available,
+        years_available=years_available,
         disqualifying_event_found=disqualifying_event,
     )
+    suffix = build_finding_suffix(3, years_available)
 
     citation, _ = compose_citation(input_data, fields_used)
+    confidence = roll_up_confidence(
+        fields_used,
+        {"restatement_of_past_accounts": input_data.restatement_search_retrieval_tier},
+    )
 
     if guard is not None:
         if guard == CheckStatus.FAIL:
             return CheckResult(
                 check_id=6,
                 status=CheckStatus.FAIL,
-                finding="Disqualifying executive instability found despite short track record",
+                finding="Disqualifying executive instability found despite short track record" + suffix,
                 reason_code="EXECUTIVE_DISQUALIFYING_SHORT_HISTORY",
                 fields_used=fields_used,
                 citation=citation,
+                confidence=confidence,
             )
         return CheckResult(
             check_id=6,
             status=CheckStatus.INCONCLUSIVE,
             finding="Check 6: insufficient track record (only "
-            f"{input_data.years_of_track_record_available if input_data.years_of_track_record_available is not None else 'unknown'} "
-            "years available vs 3 required)",
+            f"{years_available if years_available is not None else 'unknown'} "
+            "years available vs 3 required)" + suffix,
             reason_code="INSUFFICIENT_TRACK_RECORD",
             missing_data="Track record length not established or < 3 years",
             fields_used=fields_used,
             citation=citation,
+            confidence=confidence,
+        )
+
+    # Rev 3 — Rules §8.4-D disambiguation: an ESG/BRSR-only restatement found
+    # and excluded must be visible even on a PASS.
+    esg_note = ""
+    if input_data.restatement_esg_only_excluded is True:
+        esg_note = (
+            " (an ESG/BRSR data restatement was found and confirmed unrelated to the "
+            "financial statements — does not count toward this check)"
         )
 
     if input_data.cfo_changes_last_3y > 1:
         return CheckResult(
             check_id=6,
             status=CheckStatus.FAIL,
-            finding=f"{input_data.cfo_changes_last_3y} CFO changes in last 3 years (> 1 triggers fail)",
+            finding=f"{input_data.cfo_changes_last_3y} CFO changes in last 3 years (> 1 triggers fail)" + suffix,
             reason_code="CFO_CHANGES_GT_1",
             fields_used=fields_used,
             citation=citation,
+            confidence=confidence,
         )
 
     if input_data.restatement_of_past_accounts is True:
         return CheckResult(
             check_id=6,
             status=CheckStatus.FAIL,
-            finding="retroactive restatement of past accounts",
+            finding="retroactive restatement of past accounts" + suffix,
             reason_code="ACCOUNTING_RESTATEMENT",
             fields_used=fields_used,
             citation=citation,
+            confidence=confidence,
         )
 
     return CheckResult(
         check_id=6,
         status=CheckStatus.PASS,
-        finding=f"{input_data.cfo_changes_last_3y} CFO change(s) (<= 1), no restatement",
+        finding=f"{input_data.cfo_changes_last_3y} CFO change(s) (<= 1), no restatement" + suffix + esg_note,
         reason_code="EXECUTIVE_STABILITY_HEALTHY",
         fields_used=fields_used,
         citation=citation,
+        confidence=confidence,
     )

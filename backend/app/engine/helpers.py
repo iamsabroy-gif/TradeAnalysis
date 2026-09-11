@@ -1,15 +1,19 @@
 """
 Pure helper functions for the Phase 1 Decision Engine.
-Strictly maps to Phase1-Algorithms.md §1, §2, §2a, §2b, §2c.
+Strictly maps to Phase1-Algorithms-v3.md §1, §2, §2a-§2h.
 Pure functions — zero network or disk I/O.
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from backend.app.models.enums import (
     CheckStatus,
     CompanyType,
+    Confidence,
+    IndustrySector,
     ReportingBasis,
+    RetrievalTier,
+    WorkingCapitalCycleTier,
 )
 from backend.app.models.schemas import CompanyInput, FieldProvenance
 
@@ -149,3 +153,123 @@ def derive_pledged_pct_of_total_shares(input_data: CompanyInput) -> Optional[flo
         / 100.0,
         4,
     )
+
+
+def build_finding_suffix(years_required: Optional[int], years_available: Optional[int]) -> str:
+    """
+    Rev 3 — Phase1-Algorithms-v3.md §2d.
+    Returns "" when the full window was available or years_required does not
+    apply to this check.
+    """
+    if years_required is None or years_available is None:
+        return ""
+    if years_available >= years_required:
+        return ""
+    return f" (based on {years_available} of the required {years_required} years)"
+
+
+def roll_up_confidence(
+    fields_used: List[str],
+    retrieval_tier_fields: Dict[str, Optional[RetrievalTier]],
+) -> Confidence:
+    """
+    Rev 3 — Phase1-Algorithms-v3.md §2d.
+    A field with no tier entry is assumed PRIMARY. HIGH unless a FALLBACK
+    tier is present, in which case MEDIUM.
+    """
+    tiers = [retrieval_tier_fields.get(f, RetrievalTier.PRIMARY) for f in fields_used if f in retrieval_tier_fields]
+    if not tiers:
+        return Confidence.HIGH
+    if any(t == RetrievalTier.UNAVAILABLE for t in tiers):
+        return Confidence.HIGH  # unreachable in practice — see §2d
+    if any(t == RetrievalTier.FALLBACK for t in tiers):
+        return Confidence.MEDIUM
+    return Confidence.HIGH
+
+
+# Rev 4 — Phase1-Algorithms-v3.md §2f / Phase1-Rules-v2.md §8.4-E.
+# Flag threshold as a percentage-of-revenue figure (e.g. 1.35 means 1.35%).
+_SECTOR_FLAG_THRESHOLDS = {
+    IndustrySector.TIER1_FINANCIAL_SERVICES: 1.35,
+    IndustrySector.TIER2_PHARMA_HEALTHCARE_IT: 0.75,
+    IndustrySector.TIER3_REGULATED_GOVT_TELECOM_ENERGY: 0.68,
+    IndustrySector.TIER4_MANUFACTURING_INDUSTRIALS: 0.45,
+    IndustrySector.TIER5_RETAIL_FMCG_CONSUMER: 0.30,
+    IndustrySector.TIER_OTHER_UNCLASSIFIED: 0.75,
+}
+
+
+def sector_flag_threshold(sector: IndustrySector) -> float:
+    """Rev 4 — Rules §8.4-E table, reproduced as data."""
+    return _SECTOR_FLAG_THRESHOLDS[sector]
+
+
+# Rev 5 — Phase1-Algorithms-v3.md §2g / Phase1-Rules-v2.md §8.4-G.
+_WC_CYCLE_THRESHOLDS = {
+    WorkingCapitalCycleTier.LONG_CYCLE_PROJECT_ACCOUNTING: {"cfo_pat_floor": 0.65, "negative_years_trigger": 4},
+    WorkingCapitalCycleTier.MODERATE_CYCLE: {"cfo_pat_floor": 0.75, "negative_years_trigger": 3},
+    WorkingCapitalCycleTier.SHORT_CYCLE_ASSET_LIGHT: {"cfo_pat_floor": 0.85, "negative_years_trigger": 3},
+    WorkingCapitalCycleTier.TIER_OTHER_UNCLASSIFIED: {"cfo_pat_floor": 0.75, "negative_years_trigger": 3},
+    # LENDING_INSTITUTION_NA deliberately has no entry — check5 must branch to
+    # INCONCLUSIVE before calling this function for that tier.
+}
+
+
+def working_capital_cycle_thresholds(tier: WorkingCapitalCycleTier) -> Dict[str, float]:
+    """Rev 5 — Rules §8.4-G table, reproduced as data."""
+    return _WC_CYCLE_THRESHOLDS[tier]
+
+
+def verify_use_of_funds(
+    input_data: CompanyInput,
+    cumulative_pat: float,
+    cumulative_cfo: float,
+) -> Optional[Dict[str, object]]:
+    """
+    Rev 6 — Phase1-Algorithms-v3.md §2h / Phase1-Rules-v2.md §8.4-H.
+    Returns None (not {"verified": False}) if the fields needed to attempt
+    verification are missing — callers MUST treat None as "cannot verify".
+    """
+    required = [
+        input_data.revenue_last_5y,
+        input_data.cumulative_working_capital_change_5y,
+        input_data.liquid_cushion_first_year,
+        input_data.liquid_cushion_last_year,
+    ]
+    if any(v is None for v in required):
+        return None
+    if len(input_data.revenue_last_5y) < 2 or input_data.revenue_last_5y[0] <= 0:
+        return None  # can't compute a first->last growth ratio
+
+    notes: List[str] = []
+
+    # (a) Growth is real
+    revenue_growth_ratio = input_data.revenue_last_5y[-1] / input_data.revenue_last_5y[0]
+    growth_ok = revenue_growth_ratio >= 1.5
+    notes.append(
+        f"(a) revenue grew {round(revenue_growth_ratio, 2)}x over the window "
+        f"(>= 1.5x required): {'met' if growth_ok else 'NOT met'}"
+    )
+
+    # (b) The shortfall is a working-capital story
+    gap = cumulative_pat - cumulative_cfo
+    if gap <= 0:
+        return None  # only meaningful when there IS a shortfall to explain
+    wc_coverage = abs(input_data.cumulative_working_capital_change_5y) / abs(gap)
+    wc_ok = wc_coverage >= 0.60
+    notes.append(
+        f"(b) working-capital change covers {round(wc_coverage * 100, 1)}% of the "
+        f"PAT-CFO gap (>= 60% required): {'met' if wc_ok else 'NOT met'}"
+    )
+
+    # (c) Not hoarding
+    cushion_pct_first = input_data.liquid_cushion_first_year / input_data.revenue_last_5y[0]
+    cushion_pct_last = input_data.liquid_cushion_last_year / input_data.revenue_last_5y[-1]
+    hoarding_ok = cushion_pct_last <= cushion_pct_first * 1.10
+    notes.append(
+        f"(c) liquid cushion is {round(cushion_pct_last * 100, 1)}% of revenue in the "
+        f"latest year vs {round(cushion_pct_first * 100, 1)}% in the first year "
+        f"(must not exceed a 10% rise): {'met' if hoarding_ok else 'NOT met'}"
+    )
+
+    return {"verified": bool(growth_ok and wc_ok and hoarding_ok), "notes": notes}

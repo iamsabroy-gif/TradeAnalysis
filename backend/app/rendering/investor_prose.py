@@ -60,6 +60,72 @@ CHECK_METADATA = {
 }
 
 
+# Rev 3 — Phase1-Algorithms-v3.md §10 point 7 / Phase1-Rules-v2.md §5's
+# confidence-labelling requirement, worked pattern in §5c: never say the word
+# "confidence" or a raw MEDIUM/LOW tag — name what wasn't directly confirmed.
+CONFIDENCE_NOTE_TEMPLATES = {
+    1: (
+        "One honest limitation: we couldn't confirm this company's regulatory-action "
+        "history against the primary SEBI enforcement registry search — only a general "
+        "web search was available as a fallback. Nothing turned up in what we could "
+        "check, but a registry-only action could in principle be missed by a web "
+        "search alone."
+    ),
+    2: (
+        "One honest limitation: we weren't able to pull the actual quarter-by-quarter "
+        "pledge history — only today's figure plus a recent filing confirming no new "
+        "pledge was created. So we're confident about the pledge level right now, but "
+        "we can't independently show you the trend line the way we can when the full "
+        "quarterly series is available."
+    ),
+    4: (
+        "One honest limitation: this company's annual report did not break its "
+        "contingent liabilities into the litigation-vs-routine sub-categories we "
+        "normally use, so this finding rests on the total figure alone rather than the "
+        "more precise litigation-only view."
+    ),
+    6: (
+        "One honest limitation: the restatement check for this company could not be "
+        "run through both required steps — the targeted document search and a review "
+        "of the auditor's report for an Emphasis of Matter paragraph. Nothing surfaced "
+        "in what we could check, but this finding rests on thinner groundwork than usual."
+    ),
+}
+
+
+def _confidence_note(check_id: int) -> str:
+    return CONFIDENCE_NOTE_TEMPLATES.get(
+        check_id,
+        "One honest limitation: part of this finding relies on a fallback source "
+        "rather than the primary registry or document our process normally requires.",
+    )
+
+
+def _warning_paragraph(check: CheckResult) -> Dict[str, str]:
+    """
+    Rev 6 — Phase1-Algorithms-v3.md §10 point 9 / Phase1-Rules-v2.md §5d.
+    Its own clearly-labelled section — never a footnote folded into the
+    "all six passed" summary.
+    """
+    body = check.finding
+    if body.startswith("WARNING — "):
+        body = body[len("WARNING — "):]
+    return {
+        "title": "Cash conversion — passed, but with a flag worth reading",
+        "body": (
+            "Normally a cash-conversion shortfall like this would be an automatic stop "
+            "for us. Here, we traced where the 'missing' cash actually went using the "
+            "company's own Cash Flow Statement and Balance Sheet, and it checked out as "
+            "business expansion rather than cash going missing: " + body
+        ),
+        "closing": (
+            "CLEARED TO PHASE 2 still means \"safe enough to study further,\" not "
+            "\"buy\" — this is simply the one place where the headline PASS needs a "
+            "bit more context, and we're giving you that context rather than hiding it."
+        ),
+    }
+
+
 def render_investor_report(result: Phase1Result) -> Dict[str, Any]:
     """
     Renders an investor-friendly view following Docs/user.md principles.
@@ -131,6 +197,10 @@ def render_investor_report(result: Phase1Result) -> Dict[str, Any]:
                 "so_what": so_what,
                 "missing_data": c.missing_data,
                 "citation": c.citation,
+                # Rev 3 — mandatory plain-language disclosure, never a raw tag.
+                "confidence_note": _confidence_note(c.check_id) if c.check_id in result.low_confidence_checks else None,
+                # Rev 6 — dedicated warning paragraph, never a silent PASS.
+                "warning": _warning_paragraph(c) if c.check_id in result.warning_checks else None,
             }
         )
 
@@ -157,5 +227,7 @@ def render_investor_report(result: Phase1Result) -> Dict[str, Any]:
         "lead_story": lead_story,
         "checks": check_cards,
         "citation_gaps": result.citation_gaps,
+        "low_confidence_checks": result.low_confidence_checks,
+        "warning_checks": result.warning_checks,
         "sebi_disclaimer": VERBATIM_SEBI_DISCLAIMER,
     }

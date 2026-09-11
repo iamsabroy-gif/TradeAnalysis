@@ -9,8 +9,10 @@ and would fail in deployments that do not bundle the test directory.
 from backend.app.models.enums import (
     AuditOpinion,
     Confidence,
+    IndustrySector,
     RegulatoryNature,
     ReportingBasis,
+    WorkingCapitalCycleTier,
 )
 from backend.app.models.schemas import (
     CompanyInput,
@@ -105,6 +107,26 @@ def make_clean_company_input() -> CompanyInput:
             period="FY24",
             confidence=Confidence.MANUAL,
         ),
+        "industry_sector": FieldProvenance(
+            field_name="industry_sector",
+            source="Screener.in company header (NSE/BSE sector tag)",
+            period="FY24",
+            confidence=Confidence.HIGH,
+        ),
+        "litigation_claims_exposure": FieldProvenance(
+            field_name="litigation_claims_exposure",
+            source="AR FY24 Note 31 Contingent Liabilities (sub-category)",
+            period="FY24",
+            basis=ReportingBasis.CONSOLIDATED,
+            confidence=Confidence.HIGH,
+        ),
+        "routine_guarantee_exposure": FieldProvenance(
+            field_name="routine_guarantee_exposure",
+            source="AR FY24 Note 31 Contingent Liabilities (sub-category)",
+            period="FY24",
+            basis=ReportingBasis.CONSOLIDATED,
+            confidence=Confidence.HIGH,
+        ),
         "contingent_liabilities": FieldProvenance(
             field_name="contingent_liabilities",
             source="AR FY24 Note 31 Contingent",
@@ -117,6 +139,12 @@ def make_clean_company_input() -> CompanyInput:
             source="AR FY24 Balance Sheet",
             period="FY24",
             basis=ReportingBasis.CONSOLIDATED,
+            confidence=Confidence.HIGH,
+        ),
+        "working_capital_cycle_tier": FieldProvenance(
+            field_name="working_capital_cycle_tier",
+            source="Screener.in company header (NSE/BSE sector tag)",
+            period="FY24",
             confidence=Confidence.HIGH,
         ),
         "cfo_last_5y": FieldProvenance(
@@ -157,9 +185,12 @@ def make_clean_company_input() -> CompanyInput:
         regulatory_action=RegulatoryActionInput(
             active_or_past_5y=False, nature=RegulatoryNature.NONE
         ),
-        legal_fees=50.0,
+        legal_fees=3.0,
         audit_fees=30.0,
-        legal_fees_prior_year=45.0,
+        legal_fees_prior_year=2.8,
+        # Auto & auto components — Tier4 (legal-fee sector) per Rules §8.4-E
+        industry_sector=IndustrySector.TIER4_MANUFACTURING_INDUSTRIALS,
+        legal_fee_surge_explained=None,
         # Check 2
         govt_shareholding_pct=0.0,
         promoter_holding_pct_of_company=60.0,
@@ -170,10 +201,15 @@ def make_clean_company_input() -> CompanyInput:
         rpt_sales_plus_purchases=40.0,
         revenue=1000.0,
         unusual_affiliate_dealings=False,
-        # Check 4
-        contingent_liabilities=100.0,
+        # Check 4 — Auto & auto components carry meaningful routine
+        # guarantee/LC volume; litigation exposure kept small and genuine.
+        contingent_liabilities=320.0,
+        litigation_claims_exposure=20.0,
+        routine_guarantee_exposure=300.0,
+        contingent_liabilities_breakdown_available=True,
         net_worth=1000.0,
-        # Check 5
+        # Check 5 — Auto & auto components: Moderate-cycle (0.75 floor / 3yr trigger)
+        working_capital_cycle_tier=WorkingCapitalCycleTier.MODERATE_CYCLE,
         cfo_last_5y=[100.0, 110.0, 120.0, 130.0, 140.0],
         pat_last_5y=[90.0, 100.0, 110.0, 120.0, 130.0],
         # Check 6
