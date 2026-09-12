@@ -2,12 +2,14 @@
 
 *Operating instructions for running the "Trust Check" governance screen on a stock and
 returning the verdict. Read this file top to bottom before analysing. It defines the data
-to gather, the exact pass/fail logic, the decision rule, and how the result must be written
+to gather, the exact pass/fail logic, the decision
+rule, and how the result must be written
 up for the investor. This is a **red-flag elimination filter**, not a buy signal — the only
 outputs are REJECT, CLEARED TO PHASE 2, or HOLD — INCONCLUSIVE.*
 
 **Source checklist:** this screen operationalises **Section A — Red Flags & Governance,
-Q1–Q6** of this project's own `Stock - Analysis - Question - Set.md`. Every check below maps
+Q1–Q6** of this project's own
+`Stock - Analysis - Question - Set.md`. Every check below maps
 1:1 to one of those six questions. Debt and leverage (Section F of the question set) is
 deliberately **not** part of this filter — that belongs to Phase 2 (Core Health). Keep that
 boundary.
@@ -23,10 +25,10 @@ file shows exactly how that wrapping works.
 ## 0. Core principle
 
 Phase 1's job is **capital preservation**, not opportunity-finding. It answers one question:
-*is this company honest and stable enough to be worth studying?* Six checks stand at the
-door — the same six questions as Section A of the question set. **If a stock fails even one
-check, it is REJECTED — stop immediately.** Do not build a valuation, do not look at the
-price chart, do not weigh the growth story against a red flag. The moment one check fails,
+*is this company honest and stable enough to be worth studying?* Six checks stand at
+the door — the same six questions as Section A of the question set. **If a stock fails even one
+check, it is REJECTED — stop immediately.** Do not build a valuation, do not look at
+the price chart, do not weigh the growth story against a red flag. The moment one check fails,
 the analysis is over and the verdict is REJECT.
 
 Treat this as strictly **pass/fail per check**, never a score out of six.
@@ -54,9 +56,8 @@ what is missing and where it would normally be found.
 
 **Track record shorter than the lookback window:** If the company has been listed or
 reporting for less than the required window (3 years for Checks 1 & 6, 5 years for Check 5),
-do not FAIL or PASS on partial data. Evaluate over whatever full years are actually
-available and mark the check **INCONCLUSIVE — insufficient track record (only N years
-available)** rather than PASS or FAIL. Exception: if even one available year shows a
+do not FAIL or PASS on partial data. Evaluate over whatever full years are
+actually available and mark the check **INCONCLUSIVE — insufficient track record (only N years available)** rather than PASS or FAIL. Exception: if even one available year shows a
 disqualifying event (e.g. a qualified audit opinion, a CFO exit tied to a restatement),
 that still triggers an immediate FAIL — a short history can still fail, it just cannot
 "pass" prematurely.
@@ -103,9 +104,11 @@ Apply each rule literally. "Safe" = Pass; any listed danger condition = Fail.
 - PASS if RPT ≤ 5% and no suspicious affiliate transactions.
 
 **Check 4 — Contingent Liabilities** *(Section A Q4)*
-- FAIL if net worth ≤ 0 (broken balance sheet), **OR** contingent liabilities **> 15%** of
-  net worth.
-- PASS if contingent liabilities ≤ 15% of net worth.
+- FAIL if net worth ≤ 0 (broken balance sheet), **OR** contingent liabilities exceed the
+  **Industry Sector Cap** (below):
+  - **Standard Sectors** (Pharma, Software, FMCG, etc.): **> 15%** of net worth.
+  - **High-Exposure Sectors** (Retail, Food, Construction, Real Estate): **> 50%** of net worth.
+- PASS if contingent liabilities are within the sector cap.
 - Formula: `Contingent Liabilities ÷ Net Worth × 100`.
 
 **Check 5 — Show Me the Cash** *(Section A Q5, two independent triggers — fail either one)*
@@ -123,11 +126,11 @@ Apply each rule literally. "Safe" = Pass; any listed danger condition = Fail.
 ## 3. Decision rule (the gate)
 
 1. Evaluate all six checks (PSUs and zero-promoter companies auto-pass Check 2).
-2. **If any check = FAIL → verdict is REJECT.** Report the failing check(s) and stop. Do not
+2. **If any check = FAIL $\to$ verdict is REJECT.** Report the failing check(s) and stop. Do not
    proceed to any further analysis.
-3. **If any check = INCONCLUSIVE (and none failed) → verdict is HOLD — INCONCLUSIVE.** List
+3. **If any check = INCONCLUSIVE (and none failed) $\to$ verdict is HOLD — INCONCLUSIVE.** List
    what data is missing to close it.
-4. **If all six checks = PASS → verdict is CLEARED TO PHASE 2.** State explicitly that this
+4. **If all six checks = PASS $\to$ verdict is CLEARED TO PHASE 2.** State explicitly that this
    means *only* "honest enough to study," **not** "buy." A CLEARED verdict is a passed
    background check, nothing more.
 
@@ -179,8 +182,8 @@ Formatting rules for this internal table:
 ## 5. Investor-facing output (must run through `user.md`)
 
 The internal table in §4 is the analyst's working evidence. **It is never shown to the
-investor on its own.** Every time this screen is actually run against a real stock, the
-final response must be re-expressed through `user.md`'s rules before it is sent:
+investor on its own.** Every time this screen is actually run against a real stock, the final response
+must be re-expressed through `user.md`'s rules before it is sent:
 
 - Open with a one-to-two sentence plain-English verdict in storytelling form — the investor
   should know the answer before any numbers appear.
@@ -193,8 +196,7 @@ final response must be re-expressed through `user.md`'s rules before it is sent:
 - Close every section with a "so what does this mean for me" line.
 - Keep paragraphs short (3–4 lines) for mobile reading.
 - End with the disclaimer, verbatim, from `user.md` §9.
-- Never imply a guaranteed return anywhere in the write-up (this screen makes no return
-  forecast at all).
+- Never imply a guaranteed return anywhere in the write-up (this screen makes no return forecast at all).
 - **CLEARED TO PHASE 2 means "safe enough to study further" — it is never a buy signal.**
   Say this explicitly every time a CLEARED verdict is delivered, per `user.md`'s own
   translation table.
@@ -207,8 +209,8 @@ final response must be re-expressed through `user.md`'s rules before it is sent:
 >
 > Here's what that means. When a promoter (the founder or controlling owner) borrows money
 > against their own shares in the company, it's called a **share pledge**. Think of it like
-> someone taking a personal loan by putting up their house as collateral — if things go
-> wrong, the lender can seize those shares and sell them, flooding the market and hurting
+> someone taking a personal loan by putting up their house as collateral — if things go wrong,
+> the lender can seize those shares and sell them, flooding the market and hurting
 > every other shareholder, including you.
 >
 > In this case, the promoter has pledged **34% of their holding, and that number has been
@@ -238,8 +240,8 @@ final response must be re-expressed through `user.md`'s rules before it is sent:
 > just accounting entries (5-yr Annual Report cash flow statements vs P&L).
 >
 > **So what does this mean for you?** Think of this like a background check before hiring a
-> contractor — passing it means they're honest and stable enough to talk to, not that
-> you've already agreed to hire them. The next step, Phase 2, checks whether this is
+> contractor — passing it means they're honest and stable enough to talk to, not that you've
+> already agreed to hire them. The next step, Phase 2, checks whether this is
 > actually a *good* business — decent profits, healthy margins, manageable debt — before
 > price ever enters the conversation.
 >
@@ -277,14 +279,15 @@ final response must be re-expressed through `user.md`'s rules before it is sent:
 - [ ] A single clear verdict: REJECT / CLEARED TO PHASE 2 / HOLD — INCONCLUSIVE.
 - [ ] Any Fail names the specific check and breached threshold.
 - [ ] The investor-facing write-up follows `user.md` — plain-English lead, terms explained,
-      numbers translated, Pass/Fail table used, "so what does this mean for me" per section.
+      numbers translated, Pass/Fail table used, "so what does this mean for you" per section.
 - [ ] No specific return is promised or implied; the SEBI disclaimer is present verbatim.
 
 ---
 
 ## 8. Data Retrieval & Execution Solution (Sources, Links & Approach)
 
-*This section defines the automated/standard retrieval pipeline for running Phase 1 on any Indian listed stock given just the company name or stock ticker.*
+*This section defines the automated/standard retrieval pipeline for running Phase 1 on any
+Indian listed stock given just the company name or stock ticker.*
 
 ### 8.1 Common URLs & Repositories
 

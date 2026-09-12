@@ -55,6 +55,10 @@ Phase 2 grades each check on five states instead of two:
 | `INCONCLUSIVE` | Required data unavailable or unverifiable | blocks a CLEARED verdict |
 | `NOT_APPLICABLE` | Check does not apply (stated reason required) | excluded from counts |
 
+**The Trend Modifier:** `CONCERN` and `PASS` are not static. 
+- If a check is in the `CONCERN` zone but the metric has improved for 3 consecutive years, upgrade to `PASS`.
+- If a check is in the `PASS` zone but the metric has deteriorated for 3 consecutive years, downgrade to `CONCERN`.
+
 This is still **not a score out of twelve**. A `FAIL` is never outweighed by passes
 elsewhere, and `CONCERN` counts are evaluated by rule (§3), never averaged into a rating.
 
@@ -120,9 +124,7 @@ latest year alone. A peak-cycle year flatters every one of them.
 
 ## 2. Pass / Concern / Fail logic (exact thresholds)
 
-Apply each rule literally. Read §2.5 (sector adjustments) **before** applying any threshold —
-several are sector-conditional, and applying the default to a financial or a regulated
-utility produces a wrong answer, not a conservative one.
+Apply each rule literally. Boundary values for FAIL/PASS are not one-size-fits-all; they vary by industry. **Read §2.5 (Industry Boundary Matrix) before applying any threshold.**
 
 ### Group A — What the business earns
 
@@ -132,16 +134,11 @@ The single most important check in Phase 2. RoCE = `EBIT ÷ (Total equity + Tota
 and equivalents)`, expressed as %.
 
 - `FAIL` if **any** of:
-  1. 5-year **median** RoCE **< 12%**.
+  1. 5-year **median** RoCE is **below the FAIL threshold for the sector** (see §2.5).
   2. RoCE declined in **4 of the last 5 years** *and* the latest year is **< 15%**.
   3. Latest-year RoCE is **negative**.
-- `CONCERN` if 5-year median RoCE is **12% to under 15%**.
-- `PASS` if 5-year median RoCE is **≥ 15%** and not in sustained decline.
-
-*Rationale for the 12% floor:* with an Indian risk-free rate around 7%, a business earning
-under 12% on its capital is barely compensating for equity risk — it is consuming capital
-to stand still. The 15% quality bar is the level at which reinvested profit meaningfully
-compounds.
+- `CONCERN` if 5-year median RoCE is **between the FAIL and PASS thresholds** for the sector.
+- `PASS` if 5-year median RoCE is **≥ the PASS threshold** for the sector and not in sustained decline.
 
 **Check 8 — Margin trajectory** *(Q19)*
 
@@ -150,13 +147,12 @@ move (input costs, mix, pricing, operating leverage, one-offs).
 
 - `FAIL` if **any** of:
   1. Latest-year EBITDA margin **≤ 0** (the business loses money at the operating level).
-  2. EBITDA margin declined by **more than 500 bps** over 3 years with no identified,
+  2. EBITDA margin declined by **more than 25% of its 3-year average** over 3 years with no identified,
      non-recurring cause.
   3. Net margin negative in **≥ 2 of the last 3 years**.
-- `CONCERN` if EBITDA margin declined **300–500 bps** over 3 years, **or** the decline is
-  under 300 bps but the driver is structural (permanent pricing pressure, adverse mix shift)
-  rather than cyclical.
-- `PASS` if EBITDA margin is stable (within ±300 bps) or rising over 3 years, with the move
+- `CONCERN` if EBITDA margin declined **10–25% of its 3-year average** over 3 years, **or** the decline is
+  structural (permanent pricing pressure, adverse mix shift) rather than cyclical.
+- `PASS` if EBITDA margin is stable (within ±10% relative variance) or rising over 3 years, with the move
   explained.
 
 > **Note:** a margin move with **no identified driver** is not a pass. If the numbers moved
@@ -190,12 +186,12 @@ EBITDA`, and `total debt ÷ total equity` for each of the last 3 years.
   shift the weight to Checks 14 and 15 — where idle cash and inter-corporate exposure are the
   real questions — and note in the finding that leverage risk has been displaced, not absent.
 - `FAIL` if **any** of:
-  1. `Net debt ÷ EBITDA` **> 3.0x** (see §2.5 for the regulated-infrastructure exception).
-  2. `Total debt ÷ total equity` **> 1.5x**.
+  1. `Net debt ÷ EBITDA` is **above the FAIL threshold for the sector** (see §2.5).
+  2. `Total debt ÷ total equity` is **above the FAIL threshold for the sector** (see §2.5).
   3. Total equity (net worth) is **≤ 0**.
-- `CONCERN` if `net debt ÷ EBITDA` is **2.0x to 3.0x** **and** has risen in each of the last
+- `CONCERN` if `net debt ÷ EBITDA` is **between the PASS and FAIL thresholds** for the sector, **and** has risen in each of the last
   3 years.
-- `PASS` if `net debt ÷ EBITDA` **≤ 2.0x** and `debt ÷ equity` **≤ 1.5x**.
+- `PASS` if `net debt ÷ EBITDA` and `debt ÷ equity` are **both ≤ the PASS thresholds** for the sector.
 
 Cross-reference the direction of travel against the capital-allocation stance recorded at
 Q17. Leverage rising while management describes a deleveraging priority is a **credibility
@@ -206,11 +202,11 @@ flag** — record it in the finding even where the ratio itself passes.
 Interest coverage = `EBIT ÷ finance cost`.
 
 - `NOT_APPLICABLE` if the company is net cash **and** finance cost is under 1% of EBIT.
-- `FAIL` if latest-year interest coverage **< 3.0x**, **or** coverage fell below 3.0x in any
+- `FAIL` if latest-year interest coverage is **below the FAIL threshold for the sector** (see §2.5), **or** coverage fell below that threshold in any
   of the last 3 years.
-- `CONCERN` if coverage is **3.0x to 5.0x**, **or** coverage has declined in each of the last
-  3 years regardless of level.
-- `PASS` if coverage **≥ 5.0x** and stable or rising.
+- `CONCERN` if coverage is **between the FAIL and PASS thresholds** for the sector, **or** coverage has declined in each of the
+  last 3 years regardless of level.
+- `PASS` if coverage is **≥ the PASS threshold** for the sector and stable or rising.
 
 For order-book-driven businesses, additionally state whether coverage survives a **30%
 EBITDA decline** — the question set asks for adequacy "through a downturn", not at peak.
@@ -222,8 +218,7 @@ Failing that stress test is a `CONCERN` even where the current level passes.
 - `FAIL` if principal due within the next 12 months **exceeds** `cash and equivalents +
   latest-year CFO + committed undrawn credit lines`, i.e. scheduled repayment cannot be met
   without new financing that is not yet arranged.
-- `CONCERN` if **either** short-term borrowings exceed **40% of gross debt** (a long-life
-  asset base funded on short paper), **or** 12-month maturities are covered but only by
+- `CONCERN` if **either** short-term borrowings exceed **the Max ST Debt % for the sector** (see §2.5), **or** 12-month maturities are covered but only by
   drawing cash below one quarter of operating expenses.
 - `PASS` if 12-month maturities are comfortably covered and the maturity profile is
   reasonably matched to asset life.
@@ -252,7 +247,7 @@ disclosures already examined at Phase 1 Check 3 — but judge them here on **cap
 discipline**, not honesty.
 
 - `FAIL` if **any** of:
-  1. Total such exposure **> 25% of net worth**.
+  1. Total such exposure **> 25% of net worth**. (Note: if company is **net-cash**, this FAIL threshold is tightened to **> 15%**).
   2. Any material portion is **non-interest-bearing** or carries a rate materially below the
      company's own cost of borrowing (the company is funding an affiliate at shareholder
      expense).
@@ -275,11 +270,12 @@ but "whose obligation is it?"
   1. Guarantees given on behalf of entities that are **not subsidiaries** (third parties,
      promoter-group companies, associates outside the consolidation) are **material**.
   2. Total guarantees exceed **50% of net worth**.
-  3. Any guarantee has been **invoked**, or a payment has been made under one.
+  3. Any guarantee has been
+    invoked, or a payment has been made under one.
 - `CONCERN` if total guarantees are **25–50% of net worth**, or the company has borrowed
   from group/related parties or non-institutional sources on undisclosed terms.
-- `PASS` if guarantees are limited to consolidated subsidiaries and total **≤ 25% of net
-  worth**.
+- `PASS` if guarantees are limited to consolidated subsidiaries and total **≤ 25% of
+  net worth**.
 
 ### Group C — How the business collects
 
@@ -291,9 +287,9 @@ each of the last 3 years.
 Judge the **trend**, not the level. Long-cycle businesses (defence, EPC, capital goods,
 infrastructure) structurally carry long cycles; that is the business model, not a defect.
 
-- `FAIL` if CCC deteriorated by **more than 60 days** over 3 years **and** receivable days
-  exceed **120**, i.e. the company is increasingly selling on credit it cannot collect.
-- `CONCERN` if **any** of: CCC deteriorated **30–60 days** over 3 years; receivable days rose
+- `FAIL` if CCC deteriorated by **more than the FAIL threshold for the sector** (see §2.5) over 3 years **and** receivable days
+  exceed **the Critical Cap for the sector** (see §2.5).
+- `CONCERN` if **any** of: CCC deteriorated **between the PASS and FAIL thresholds** for the sector over 3 years; receivable days rose
   **more than 30%** over 3 years; inventory grew materially faster than revenue; or advances
   paid to vendors rose sharply without a matching order-book increase.
 - `PASS` if CCC is stable or improving over 3 years.
@@ -307,12 +303,11 @@ and should be noted in both findings.
 **Check 17 — Moat corroboration** *(Q29)*
 
 This check exists to stop a moat from being asserted rather than demonstrated. State the
-claimed moat type (brand, scale, licence/regulatory, switching costs, network, cost
-advantage), then test whether the **numbers corroborate it**. A moat that is real shows up
+claimed moat type (brand, scale, licence/regulatory, switching costs, network, cost advantage), then test whether the **numbers corroborate it**. A moat that is real shows up
 in the financials; a moat that only appears in the annual report's narrative is marketing.
 
 The four corroborators:
-- **(a)** RoCE sustained **≥ 15%** in at least **4 of the last 5 years** (from Check 7).
+- **(a)** RoCE sustained **≥ the PASS threshold for the sector** (see §2.5) in at least **4 of the last 5 years** (from Check 7).
 - **(b)** Gross margin stable or rising over 3 years (from Check 8).
 - **(c)** Market share stable or rising over 3 years (from Check 18).
 - **(d)** Realisation (price per unit) rising at or above input-cost inflation — evidence of
@@ -324,7 +319,7 @@ The four corroborators:
 - `CONCERN` if **only one** of the four corroborators is present, or if the moat rests
   entirely on a licence, subsidy or policy protection with a **known expiry or review date**
   inside 3 years.
-- `PASS` if **two or more** corroborators are present and none of (a)–(c) is deteriorating.
+- `PASS` if **two or more** corroborators are present, **including at least one "hard" financial proof ((a) or (b))**, and none of (a)–(c) is deteriorating.
 - `INCONCLUSIVE` if fewer than two corroborators can be evaluated at all.
 
 **Check 18 — Competitive position** *(Q31)*
@@ -337,94 +332,46 @@ Identify the key competitors and the direction of market share over 3 years.
   competitor is growing materially faster, **or** a credible new entrant / substitute
   technology is displacing the core product.
 - `PASS` if share is stable or rising.
-- `INCONCLUSIVE` if no reliable share data exists — common in fragmented or unorganised
-  sectors. Say so plainly rather than estimating; a guessed market share is worse than an
-  acknowledged gap.
+- `INCONCLUSIVE` if no reliable share data exists.
 
 ---
 
-### 2.5 Sector adjustments (read before applying any threshold)
+## 2.5 Industry Boundary Matrix
 
-The default thresholds above assume a non-financial, non-regulated operating company.
-Applying them unmodified to other business models produces confidently wrong answers.
+Thresholds for Checks 7, 10, 11, 12, and 16. These ensure we don't penalise a power plant
+for having the leverage of a software company, or a software company for having the
+returns of a utility.
 
-**Banks, NBFCs and financial services — OUT OF SCOPE.**
-For a lender, debt is raw material, not risk. `Net debt ÷ EBITDA`, `debt ÷ equity` and
-interest coverage are meaningless, and RoCE is not the right return measure. This version of
-Phase 2 **must not** be run on financials. Mark the assessment
-`INCONCLUSIVE — SECTOR OUT OF SCOPE (financial services)` and stop. A financials-specific
-rule set (RoA, RoE, net interest margin, gross and net NPA, provision coverage, capital
-adequacy) is required and does not yet exist. Forcing a bank through the thresholds above
-is the same error as guessing a missing data point.
+| Metric | Asset-Light (SaaS, FMCG, Services) | Standard (Manufacturing, Retail) | Cap-Intensive (Metals, Chem, Auto) | Regulated / Infra (Power, Toll, Pipe) |
+| :-- | :-- | :-- | :-- | :-- |
+| **RoCE** (Pass / Fail) | $\ge 20\% \ / \ < 15\%$ | $\ge 15\% \ / \ < 10\%$ | $\ge 12\% \ / \ < 8\%$ | $\ge 10\% \ / \ < 6\%$ |
+| **Net Debt/EBITDA** (Pass / Fail) | $\le 1.0\text{x} \ / \ > 2.0\text{x}$ | $\le 2.0\text{x} \ / \ > 3.0\text{x}$ | $\le 3.0\text{x} \ / \ > 4.5\text{x}$ | $\le 4.0\text{x} \ / \ > 6.0\text{x}$ |
+| **Int. Coverage** (Pass / Fail) | $\ge 6.0\text{x} \ / \ < 3.0\text{x}$ | $\ge 4.0\text{x} \ / \ < 2.0\text{x}$ | $\ge 3.0\text{x} \ / \ < 1.5\text{x}$ | $\ge 2.0\text{x} \ / \ < 1.0\text{x}$ |
+| **Max ST Debt %** (Concern) | 15% | 20% | 15% | 10% |
+| **CCC Det.** (Pass / Fail) | $\le 30 \text{ days} \ / \ > 30$ | $\le 60 \text{ days} \ / \ > 60$ | $\le 90 \text{ days} \ / \ > 90$ | $\le 120 \text{ days} \ / \ > 120$ |
+| **Max Rec. Days** (Crit Cap) | 60 days | 90 days | 120 days | 150 days |
 
-**Regulated infrastructure and utilities** (power generation/transmission, roads, ports,
-renewables with long-term offtake):
-- Check 10: relax the `net debt ÷ EBITDA` FAIL threshold from **3.0x to 4.5x**, and
-  `debt ÷ equity` from 1.5x to **2.5x**, **only** where **≥ 70% of revenue is contracted**
-  under long-term PPAs, concession agreements or regulated tariffs. State the contracted
-  percentage and its source in the finding. Without that evidence, the default applies.
-- Check 7: RoCE for regulated-return businesses is capped by the regulator. Where the
-  regulated return on equity is disclosed, assess against that benchmark and note it; the
-  12% FAIL floor still applies, since a business that cannot clear it is not worth owning
-  regardless of why.
-
-**Cyclicals** (metals, commodities, autos, chemicals, shipping): use the 5-year median for
-Checks 7, 8, 10 and 11, and state where in the cycle the latest year sits. Never pass a
-cyclical on a peak year or fail one on a trough year without saying so.
-
-**Asset-light services and IT:** Check 16's inventory component is immaterial; judge the
-cycle on receivable days alone and say that is what was done.
-
-**Government PSUs:** no special treatment in Phase 2. The Phase 1 promoter-pledge carve-out
-was specific to Phase 1 Check 2 and does **not** extend here. A PSU faces all twelve checks
-at the standard thresholds. Where a PSU's order book is concentrated with a single government
-customer, record that as a concentration note under Check 18.
-
-**Holding companies:** where the operating business sits in subsidiaries, all twelve checks
-must be run on **consolidated** figures. A standalone-only assessment is `INCONCLUSIVE`.
+**Application rules:**
+1. **Classification:** The analyst must state the sector classification before applying the matrix.
+2. **The "Between" Zone:** If a value falls between the PASS and FAIL thresholds, it is a `CONCERN` (unless the Trend Modifier in §0.1 applies).
+3. **Regulated/Infra Exception:** The relaxed thresholds for Regulated/Infra apply only if the company can prove $\ge 70\%$ of its revenue comes from long-term regulated contracts.
 
 ---
 
-### 2.6 PESTLE and the narrative questions — context, not verdict
+## 3. The Decision Rule
 
-**Q30 (PESTLE) produces no check and no pass/fail status.** It is a mandatory *context
-section* attached to the Phase 2 output: identify the two or three political, economic,
-social, technological, legal or environmental factors that most affect this specific thesis,
-and state for each what would have to change for it to matter. It informs how confidently
-the other checks are read; it never overrides them and never generates a verdict of its own.
+Evaluate the results of the twelve checks. A verdict is determined by the presence of `FAIL`s, `CONCERN`s, and `INCONCLUSIVE`s.
 
-The same applies to question-set Sections **B** (3-year evolution), **C** (expansion plans),
-**D** (management commentary), **H** (vendors and outsourcing) and **J** (guidance vs.
-delivery). These are narrative reads of unstructured documents with no threshold to apply.
-**Do not invent thresholds to force them into a check.** They are gathered as cited evidence
-with no verdict, and three of them feed Phase 2 findings directly:
-- Q17 (capital-allocation stance) → cross-referenced in **Check 10**.
-- Q36 (bought-out material as % of sales) → explains margin moves in **Check 8**.
-- Q37 (vendor advances, payable days) → explains the cycle in **Check 16**.
-
----
-
-## 3. Decision rule (the gate)
-
-Evaluate **all twelve** checks — no short-circuit (§0.3). Then apply, in order:
-
-1. **Any check = `FAIL` → verdict is `REJECT AT PHASE 2`.**
-   Report every failing check and its breached threshold. The company is not a quality
-   business at the thresholds this framework holds. Do not proceed to Phase 3, and do not
-   offset a FAIL against strengths elsewhere.
-
-2. **Else, any check = `INCONCLUSIVE` → verdict is `HOLD — INCONCLUSIVE`.**
-   List exactly what data is missing and which document would close it. A stock cannot be
-   cleared while any check is open.
-
-3. **Else, if the `CONCERN` count is ≥ 3, OR two or more `CONCERN`s fall within the same
-   group (A: earns / B: owes / C: collects / D: lasts) → verdict is `HOLD — WATCH LIST`.**
-   Two concerns in one group is a pattern, not a coincidence — a business with both a
-   deteriorating margin and a deteriorating segment mix has one problem showing up twice.
-   State the specific improvements that would move it to CLEARED, and what to re-check next
+1. **Any `FAIL` $\to$ verdict is `REJECT AT PHASE 2`.**
+   Immediate disqualification. No offsetting.
+2. **If no `FAIL`s, but $\ge 3$ `CONCERN`s $\to$ verdict is `REJECT AT PHASE 2`.**
+   Three warnings across different groups indicate a business that is structurally mediocre.
+3. **If no `FAIL`s and $< 3$ `CONCERN`s, but $\ge 1$ `INCONCLUSIVE` $\to$ verdict is `HOLD — INCONCLUSIVE`.**
+   The quality is not yet proven. Do not move to price until the data gap is closed.
+4. **If no `FAIL`s and $< 3$ `CONCERN`s, and no `INCONCLUSIVE`s, but $\ge 1$ `CONCERN` $\to$ verdict is `HOLD — WATCH LIST`.**
+   A decent business with a specific flaw. State the specific improvements that would move it to CLEARED, and what to re-check next
    quarter.
-
-4. **Else → verdict is `CLEARED TO PHASE 3`.**
+5. **Else $\to$ verdict is `CLEARED TO PHASE 3`.**
    State explicitly that this means *only* "this is a good business" — **not** "buy". Price
    has not been examined at all. A CLEARED verdict at Phase 2 says the apartment is worth
    living in; it says nothing about the asking price.
@@ -451,14 +398,14 @@ happens in §5, on top of this table, never instead of it.
 
 ### Group A — What it earns
 | # | Check | Finding (with number vs threshold) | Source | Status |
-| :-: | :-- | :-- | :-- | :-: |
+| :-: | :-- | :-- | :-: | :-: |
 | 7 | Return on capital | | | |
 | 8 | Margin trajectory | | | |
 | 9 | Segment economics | | | |
 
 ### Group B — What it owes
 | # | Check | Finding (with number vs threshold) | Source | Status |
-| :-: | :-- | :-- | :-- | :-: |
+| :-: | :-- | :-- | :-: | :-: |
 | 10 | Leverage quantum & trend | | | |
 | 11 | Interest-service adequacy | | | |
 | 12 | Maturity & refinancing | | | |
@@ -468,12 +415,12 @@ happens in §5, on top of this table, never instead of it.
 
 ### Group C — How it collects
 | # | Check | Finding (with number vs threshold) | Source | Status |
-| :-: | :-- | :-- | :-- | :-: |
+| :-: | :-- | :-- | :-: | :-: |
 | 16 | Working-capital cycle | | | |
 
 ### Group D — Why it lasts
 | # | Check | Finding (with number vs threshold) | Source | Status |
-| :-: | :-- | :-- | :-- | :-: |
+| :-: | :-- | :-- | :-: | :-: |
 | 17 | Moat corroboration | | | |
 | 18 | Competitive position | | | |
 
@@ -635,13 +582,12 @@ must be re-expressed through `user.md`'s rules before it is sent:
 - [ ] Sector treatment stated, and any relaxed threshold evidenced with its source.
 - [ ] Each check shows the actual figure against its threshold, with a citation.
 - [ ] PESTLE context section present (Q30), carrying no verdict.
-- [ ] A single clear verdict: `CLEARED TO PHASE 3` / `HOLD — WATCH LIST` /
-      `REJECT AT PHASE 2` / `HOLD — INCONCLUSIVE`.
+- [ ] A single clear verdict: `CLEARED TO PHASE 3` / `HOLD — WATCH LIST` / `REJECT AT PHASE 2` / `HOLD — INCONCLUSIVE`.
 - [ ] Any `FAIL` names the specific check and breached threshold.
 - [ ] A `HOLD — WATCH LIST` verdict names the specific, observable changes that would clear it.
 - [ ] No share price, market cap, or valuation multiple appears anywhere in the output.
 - [ ] The investor-facing write-up follows `user.md` — plain-English lead, terms explained,
-      numbers translated, translation table used, "so what does this mean for me" per section.
+  numbers translated, translation table used, "so what does this mean for me" per section.
 - [ ] No specific return is promised or implied; the SEBI disclaimer is present verbatim.
 
 ---
@@ -658,7 +604,7 @@ pipeline has already run and its artefacts (Annual Report PDFs, Screener tables)
 | :-- | :-- | :-- |
 | **Screener.in (Primary Hub)** | `https://www.screener.in/company/{TICKER}/consolidated/` | 5-yr P&L (revenue, EBITDA, EBIT, finance cost, PAT), balance sheet (debt, equity, cash), 5-yr RoCE/RoE ratio row, and the working-capital days block. Covers Checks 7, 8, 10, 11, 16 at first pass. |
 | **Annual Report PDFs (via Screener → Documents)** | Latest 3–5 FYs | Segment note (Check 9), borrowings maturity schedule (Check 12), covenant and security terms (Check 13), loans-and-advances note (Check 14), guarantees note (Check 15), MD&A for margin drivers (Check 8) and moat narrative (Check 17). |
-| **Credit rating agencies** | CRISIL `https://www.crisil.com/en/home/our-businesses/ratings.html`<br>ICRA `https://www.icra.in/Rating/RatedEntity`<br>CARE `https://www.careratings.com/`<br>India Ratings `https://www.indiaratings.co.in/` | Rating, outlook, 3-yr rating action history, and the agency's own commentary on leverage, covenants and liquidity (Check 13). Rating rationales are often the single best source for the maturity profile (Check 12). |
+| **Credit rating agencies** | CRISIL `https://www.crisil.com/en/home/our-businesses/ratings.html`<br>ICRA `https://www.icra.in/Rating/RatedEntity`<br>CARE `https://www.careratings.com/`<br>India Ratings `https://www.indiaratings.co.in/` | Rating, outlook, 3-yr rating action history, and the agency's own commentary on leverage, covenants and liquidity (Check 12). Rating rationales are often the single best source for the maturity profile (Check 12). |
 | **BSE / NSE quarterly results filings** | `https://www.bseindia.com/corporates/Comp_Results.aspx?Code={BSE_SCRIP_CODE}` | Latest quarter segment revenue and results, ahead of the next Annual Report (Checks 8, 9). |
 | **Industry bodies / sector regulators** | e.g. SIAM (autos), IBEF sector reports, sector regulator dashboards | Market share and industry growth (Check 18). Where none exists, Check 18 is `INCONCLUSIVE`. |
 | **Peer filings** | Screener pages of 3–5 named competitors | Relative growth and margin comparison for Check 18. **Pull operating metrics only — never valuation multiples** (§0.2). |
@@ -669,7 +615,8 @@ pipeline has already run and its artefacts (Annual Report PDFs, Screener tables)
 | :-- | :-- | :-- | :-- |
 | **Screener.in** → main page HTML | Rendered financial tables | Raw extracted tables (JSON/Text) | • 5-yr P&L: Sales, Operating Profit, OPM %, Interest, Depreciation, Profit before tax, Net Profit.<br>• 5-yr Balance Sheet: Borrowings, Reserves, Equity Capital, Cash equivalents.<br>• Ratios row: RoCE %, RoE %.<br>• "Working Capital Days", "Debtor Days", "Inventory Days" block. |
 | **Annual Report PDF** (latest 3 FYs) | `{TICKER}_AR_FY{YYYY}.pdf` (reuse Phase 1 cache) | — | • **Segment Reporting note:** segment revenue, segment results, segment assets (Check 9).<br>• **Borrowings note:** long-term vs. short-term split, repayment/maturity schedule, secured vs. unsecured, assets charged, covenant terms (Checks 12, 13).<br>• **Loans and advances note + Related Party note:** inter-corporate deposits, loans to subsidiaries/JVs/associates, interest rate charged, provisions (Check 14).<br>• **Contingent Liabilities note:** corporate guarantees, letters of comfort, security given for others (Check 15).<br>• **MD&A / Directors' Report:** stated drivers of margin movement (Check 8), stated moat and industry structure (Checks 17, 18), capital-allocation stance (cross-ref Q17). |
-| **Rating agency** | Latest rating rationale + 3 yrs of prior actions (PDF) | `{TICKER}_Rating_{Agency}_{Date}.pdf` | • Current long-term rating and outlook; full rating action history.<br>• Agency's stated leverage and coverage metrics (useful cross-check on Checks 10, 11).<br>• Liquidity assessment and near-term repayment schedule (Check 12).<br>• Any covenant or refinancing commentary (Check 13). |
+| **Rating agency** | Latest rating rationale + 3 yrs of prior actions (PDF) | `{TICKER}_Rating_{Agency}_{Date}.pdf` | • Current long-term rating and outlook; 3-year action history from the rating agency site (**Check 13**).<br>• Agency's stated leverage and coverage figures against the values computed in Step 1. A material divergence usually means a basis mismatch — resolve before
+proceeding, do not average the two. |
 | **BSE/NSE results filings** | Latest quarterly results PDF/XBRL | `{TICKER}_Q{n}FY{YY}_Results.pdf` | • Segment revenue and results for the latest quarter (Check 9), to catch deterioration post-dating the Annual Report. |
 | **Industry / peer sources** | Sector report or peer Screener pages | `{SECTOR}_share_{YYYY}.*` | • Market share by player over 3 yrs; industry growth rate (Check 18). |
 
@@ -709,7 +656,7 @@ When initiating a Phase 2 review with `{TICKER}` and a confirmed Phase 1 clearan
    - Pull the latest rating rationale and the 3-year action history from the rating agency
      site (**Check 13**).
    - Cross-check the agency's leverage and coverage figures against the values computed in
-     Step 1. A material divergence usually means a basis mismatch — resolve it before
+     Step 1. A material divergence usually means a basis mismatch — resolve before
      proceeding, do not average the two.
 
 5. **Step 4 — Competitive and moat corroboration.**
@@ -728,4 +675,4 @@ When initiating a Phase 2 review with `{TICKER}` and a confirmed Phase 1 clearan
 ---
 
 _This is an educational analysis framework, not personalised investment advice. Consult a
-SEBI-registered investment advisor for guidance tailored to your financial situation._
+SEBI-registered investment advisor for guidance tailored to their financial situation._

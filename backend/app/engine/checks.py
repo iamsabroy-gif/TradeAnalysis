@@ -4,7 +4,7 @@ Strictly maps to Phase1-Algorithms-v3.md §3 to §8.
 Pure functions — zero network or disk I/O.
 """
 
-from typing import List
+from typing import List, Optional
 
 from backend.app.models.enums import (
     AuditOpinion,
@@ -17,6 +17,18 @@ from backend.app.models.enums import (
     WorkingCapitalCycleTier,
 )
 from backend.app.models.schemas import CheckResult, CompanyInput
+from backend.app.engine.rules.config import Phase1RuleConfig
+
+
+def _get_phase1_cfg(rule_config: Optional[Phase1RuleConfig] = None) -> Phase1RuleConfig:
+    if rule_config is not None:
+        return rule_config
+    try:
+        from backend.app.engine.rules.registry import get_active_rules_config
+        return get_active_rules_config().phase1
+    except Exception:
+        return Phase1RuleConfig()
+
 from .helpers import (
     apply_track_record_guard,
     assert_comparable,
@@ -37,7 +49,10 @@ _DISQUALIFYING_REGULATORY_NATURES = {
 }
 
 
-def check1_auditor_regulator(input_data: CompanyInput) -> CheckResult:
+def check1_auditor_regulator(
+    input_data: CompanyInput,
+    rule_config: Optional[Phase1RuleConfig] = None,
+) -> CheckResult:
     """
     Check 1 — Auditor & Regulator Integrity (Section A Q1)
     Phase1-Algorithms-v3.md §3. Rev 4: the fee-anomaly sub-check is now a
@@ -238,11 +253,16 @@ def detect_rising_trend(history: List[float]) -> bool:
     return False
 
 
-def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
+def check2_promoter_pledge(
+    input_data: CompanyInput,
+    rule_config: Optional[Phase1RuleConfig] = None,
+) -> CheckResult:
     """
     Check 2 — Promoter Pledge & Encumbrance (Section A Q2)
     Phase1-Algorithms.md §4
     """
+    cfg = _get_phase1_cfg(rule_config)
+
     # Auto-pass exceptions
     if input_data.company_type == CompanyType.GOVT_PSU:
         return CheckResult(
@@ -315,7 +335,7 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
             )
 
         fail_a = (
-            input_data.pledged_pct_of_promoter_holding > 10.0
+            input_data.pledged_pct_of_promoter_holding > cfg.promoter_pledge_fail_pct
             and pledged_of_total > 0.5
         )
         fail_b = False  # qualitative check, defaults false if unknown/undeterminable
@@ -349,11 +369,11 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
             )
 
     # Standard thresholds
-    if input_data.pledged_pct_of_promoter_holding > 10.0:
+    if input_data.pledged_pct_of_promoter_holding > cfg.promoter_pledge_fail_pct:
         return CheckResult(
             check_id=2,
             status=CheckStatus.FAIL,
-            finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% vs 10% limit (absolute threshold)" + trend_finding_note,
+            finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% vs {cfg.promoter_pledge_fail_pct}% limit (absolute threshold)" + trend_finding_note,
             reason_code="PLEDGE_EXCEEDS_10PCT",
             fields_used=fields_used,
             citation=citation,
@@ -374,7 +394,7 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
     return CheckResult(
         check_id=2,
         status=CheckStatus.PASS,
-        finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% (<= 10%), stable/declining over last 4 quarters" + trend_finding_note,
+        finding=f"pledge {input_data.pledged_pct_of_promoter_holding}% (<= {cfg.promoter_pledge_fail_pct}%), stable/declining over last 4 quarters" + trend_finding_note,
         reason_code="PLEDGE_SAFE",
         fields_used=fields_used,
         citation=citation,
@@ -382,11 +402,15 @@ def check2_promoter_pledge(input_data: CompanyInput) -> CheckResult:
     )
 
 
-def check3_related_party(input_data: CompanyInput) -> CheckResult:
+def check3_related_party(
+    input_data: CompanyInput,
+    rule_config: Optional[Phase1RuleConfig] = None,
+) -> CheckResult:
     """
     Check 3 — Related-Party 'Leakage' (Section A Q3)
     Phase1-Algorithms.md §5
     """
+    cfg = _get_phase1_cfg(rule_config)
     fields_used = ["rpt_sales_plus_purchases", "revenue", "unusual_affiliate_dealings"]
 
     if (
@@ -432,12 +456,12 @@ def check3_related_party(input_data: CompanyInput) -> CheckResult:
         else ReportingBasis.NOT_APPLICABLE
     )
 
-    if rpt_pct > 5.0:
+    if rpt_pct > cfg.rpt_sales_purchases_fail_pct:
         return CheckResult(
             check_id=3,
             status=CheckStatus.FAIL,
-            finding=f"RPT {rpt_pct}% of revenue vs 5% limit",
-            reason_code="RPT_EXCEEDS_5PCT",
+            finding=f"RPT {rpt_pct}% of revenue vs {cfg.rpt_sales_purchases_fail_pct}% limit",
+            reason_code="RPT_EXCEEDS_LIMIT",
             fields_used=fields_used,
             citation=citation,
             basis=basis,
@@ -457,7 +481,7 @@ def check3_related_party(input_data: CompanyInput) -> CheckResult:
     return CheckResult(
         check_id=3,
         status=CheckStatus.PASS,
-        finding=f"RPT {rpt_pct}% of revenue (<= 5%), no suspicious affiliate transactions",
+        finding=f"RPT {rpt_pct}% of revenue (<= {cfg.rpt_sales_purchases_fail_pct}%), no suspicious affiliate transactions",
         reason_code="RPT_NORMAL",
         fields_used=fields_used,
         citation=citation,
@@ -465,7 +489,10 @@ def check3_related_party(input_data: CompanyInput) -> CheckResult:
     )
 
 
-def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
+def check4_contingent_liabilities(
+    input_data: CompanyInput,
+    rule_config: Optional[Phase1RuleConfig] = None,
+) -> CheckResult:
     """
     Check 4 — Contingent Liabilities (Section A Q4)
     Phase1-Algorithms-v3.md §6. Rev 5: the flat total-over-net-worth ratio is
@@ -473,6 +500,7 @@ def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
     routine guarantee/LC/bills-discounted exposure is excluded entirely.
     net_worth <= 0 remains an unconditional FAIL.
     """
+    cfg = _get_phase1_cfg(rule_config)
     if input_data.net_worth is None:
         return CheckResult(
             check_id=4,
@@ -595,8 +623,9 @@ def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
         else ReportingBasis.NOT_APPLICABLE
     )
     ratio_pct = round((input_data.litigation_claims_exposure / input_data.net_worth) * 100.0, 2)
+    thresh = 20.0
 
-    if ratio_pct > 20.0:
+    if ratio_pct > thresh:
         return CheckResult(
             check_id=4,
             status=CheckStatus.FAIL,
@@ -624,7 +653,10 @@ def check4_contingent_liabilities(input_data: CompanyInput) -> CheckResult:
     )
 
 
-def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
+def check5_cash_conversion(
+    input_data: CompanyInput,
+    rule_config: Optional[Phase1RuleConfig] = None,
+) -> CheckResult:
     """
     Check 5 — Show Me the Cash (Section A Q5)
     Phase1-Algorithms-v3.md §7. Rev 5: flat 0.80/>=3-of-5 rule replaced by
@@ -634,6 +666,7 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
     resolving to FAIL — a verified-benign shortfall becomes a PASS carrying
     has_mandatory_warning = true.
     """
+    cfg = _get_phase1_cfg(rule_config)
     if input_data.working_capital_cycle_tier is None:
         return CheckResult(
             check_id=5,
@@ -704,7 +737,8 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
 
     negative_years_breach = negative_cfo_years >= thresholds["negative_years_trigger"]
     hard_floor_breach = cfo_pat_ratio is not None and cfo_pat_ratio < 0.50
-    tier_floor_breach = cfo_pat_ratio is not None and cfo_pat_ratio < thresholds["cfo_pat_floor"]
+    target_floor = thresholds["cfo_pat_floor"] if input_data.working_capital_cycle_tier else cfg.cfo_pat_ratio_fail_floor
+    tier_floor_breach = cfo_pat_ratio is not None and cfo_pat_ratio < target_floor
     any_verifiable_trigger = negative_years_breach or hard_floor_breach or tier_floor_breach
 
     verification = None
@@ -848,11 +882,15 @@ def check5_cash_conversion(input_data: CompanyInput) -> CheckResult:
     )
 
 
-def check6_executive_stability(input_data: CompanyInput) -> CheckResult:
+def check6_executive_stability(
+    input_data: CompanyInput,
+    rule_config: Optional[Phase1RuleConfig] = None,
+) -> CheckResult:
     """
     Check 6 — Executive Stability (Section A Q6)
     Phase1-Algorithms.md §8
     """
+    cfg = _get_phase1_cfg(rule_config)
     fields_used = ["cfo_changes_last_3y", "restatement_of_past_accounts"]
 
     if (

@@ -11,6 +11,7 @@ import uuid
 
 from backend.app.models.enums import CheckStatus, Confidence, Verdict
 from backend.app.models.schemas import CheckResult, CompanyInput, Phase1Result
+from backend.app.engine.rules.config import Phase1RuleConfig
 from .checks import (
     check1_auditor_regulator,
     check2_promoter_pledge,
@@ -25,10 +26,12 @@ from .helpers import classify_company_type
 def run_phase1(
     input_data: CompanyInput,
     prior: Optional[Phase1Result] = None,
+    rule_config: Optional[Phase1RuleConfig] = None,
 ) -> Phase1Result:
     """
     Evaluates all six checks against CompanyInput and produces a versioned Phase1Result.
     FAIL dominates INCONCLUSIVE.
+    Uses dynamic rule_config if supplied, otherwise falls back to active configuration.
     """
     # 1. Derive company type
     input_data.company_type = classify_company_type(
@@ -38,12 +41,12 @@ def run_phase1(
 
     # 2. Evaluate ALL six checks — never short-circuit the evaluation itself
     results: List[CheckResult] = [
-        check1_auditor_regulator(input_data),
-        check2_promoter_pledge(input_data),
-        check3_related_party(input_data),
-        check4_contingent_liabilities(input_data),
-        check5_cash_conversion(input_data),
-        check6_executive_stability(input_data),
+        check1_auditor_regulator(input_data, rule_config=rule_config),
+        check2_promoter_pledge(input_data, rule_config=rule_config),
+        check3_related_party(input_data, rule_config=rule_config),
+        check4_contingent_liabilities(input_data, rule_config=rule_config),
+        check5_cash_conversion(input_data, rule_config=rule_config),
+        check6_executive_stability(input_data, rule_config=rule_config),
     ]
 
     failing = [r.check_id for r in results if r.status == CheckStatus.FAIL]

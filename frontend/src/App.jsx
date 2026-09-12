@@ -14,7 +14,10 @@ import {
   CheckCircle2,
   HelpCircle,
   Database,
-  Trash2
+  Trash2,
+  TrendingUp,
+  ArrowRight,
+  Sliders
 } from 'lucide-react';
 import InvestorView from './components/InvestorView.jsx';
 import AnalystView from './components/AnalystView.jsx';
@@ -22,6 +25,8 @@ import CoverageModal from './components/CoverageModal.jsx';
 import ProvenanceChip from './components/ProvenanceChip.jsx';
 import UploadValidationModal from './components/UploadValidationModal.jsx';
 import DocumentManager from './components/DocumentManager.jsx';
+import Phase2View from './components/Phase2View.jsx';
+import RulesConfigModal from './components/RulesConfigModal.jsx';
 
 // A fully blank CompanyInput, mirroring backend/app/models/schemas.py field
 // for field. Used by "Start New Company" so a cleared form is genuinely
@@ -81,18 +86,32 @@ export default function App() {
   const [error, setError] = useState(null);
   const [statusMsg, setStatusMsg] = useState(null);
   const [activeTab, setActiveTab] = useState('investor');
+  const [currentPhase, setCurrentPhase] = useState('phase1');
   
   // Modals & Upload State
   const [coverageOpen, setCoverageOpen] = useState(false);
+  const [rulesModalOpen, setRulesModalOpen] = useState(false);
+  const [rulesConfigInfo, setRulesConfigInfo] = useState({ source: 'DEFAULT', version: '1.0.0' });
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadResultData, setUploadResultData] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
 
-  // Confirm the backend is reachable on mount. The form itself starts blank
-  // (see useState above) — no demo data is loaded automatically.
+  const refreshRulesInfo = () => {
+    fetch('/api/rules/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.source) {
+          setRulesConfigInfo({ source: data.source, version: data.version });
+        }
+      })
+      .catch(() => {});
+  };
+
+  // Confirm the backend is reachable on mount and load initial rules engine info
   useEffect(() => {
     fetch('/api/health').catch(() => setError('Failed to connect to Phase 1 backend API'));
+    refreshRulesInfo();
   }, []);
 
   // Discards every finding/reading/extraction for the current ticker —
@@ -320,7 +339,7 @@ export default function App() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: '28px',
+          marginBottom: '20px',
           flexWrap: 'wrap',
           gap: '16px',
         }}
@@ -328,23 +347,63 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div
             style={{
-              background: 'linear-gradient(135deg, #6366f1, #3b82f6)',
+              background: currentPhase === 'phase1' 
+                ? 'linear-gradient(135deg, #6366f1, #3b82f6)' 
+                : 'linear-gradient(135deg, #10b981, #06b6d4)',
               padding: '10px',
               borderRadius: '12px',
               display: 'flex',
             }}
           >
-            <ShieldCheck size={28} color="#fff" />
+            {currentPhase === 'phase1' ? (
+              <ShieldCheck size={28} color="#fff" />
+            ) : (
+              <TrendingUp size={28} color="#fff" />
+            )}
           </div>
           <div>
-            <h1 style={{ fontSize: '24px', margin: 0 }}>Phase 1 Gatekeeper</h1>
+            <h1 style={{ fontSize: '24px', margin: 0 }}>
+              {currentPhase === 'phase1' ? 'Phase 1 Gatekeeper' : 'Phase 2 Quality Engine'}
+            </h1>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
-              Honesty, Integrity & Forensic Safety Engine (Phase C Scraper & Upload Pipeline Active)
+              {currentPhase === 'phase1'
+                ? 'Honesty, Integrity & Forensic Safety Engine (Checks 1–6)'
+                : 'Business Quality, Moat & Capital Allocation Engine (Checks 7–18)'}
             </p>
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <button
+            id="open-rules-config-btn"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setRulesModalOpen(true)}
+            title="Configure dynamic rules engine thresholds, boundary matrices, and sector mappings"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Sliders size={14} /> Rules Config
+            <span
+              style={{
+                fontSize: '10.5px',
+                padding: '2px 7px',
+                borderRadius: '8px',
+                fontWeight: 600,
+                backgroundColor:
+                  rulesConfigInfo.source === 'DEFAULT'
+                    ? 'rgba(59, 130, 246, 0.15)'
+                    : 'rgba(16, 185, 129, 0.2)',
+                color: rulesConfigInfo.source === 'DEFAULT' ? '#60a5fa' : '#34d399',
+                border: `1px solid ${
+                  rulesConfigInfo.source === 'DEFAULT'
+                    ? 'rgba(59, 130, 246, 0.3)'
+                    : 'rgba(16, 185, 129, 0.4)'
+                }`,
+              }}
+            >
+              {rulesConfigInfo.source === 'DEFAULT' ? 'Default' : 'Custom'}
+            </span>
+          </button>
+
           <a
             id="download-template-link"
             href="/api/templates/workbook.xlsx"
@@ -365,8 +424,39 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Control & Acquisition Card */}
-      <section className="glass-panel" style={{ padding: '24px', marginBottom: '32px' }}>
+      {/* Top Phase Navigation Bar */}
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '28px' }}>
+        <div className="tabs-nav" style={{ padding: '6px', gap: '8px' }}>
+          <button
+            id="tab-switch-phase1"
+            className={`tab-btn ${currentPhase === 'phase1' ? 'active' : ''}`}
+            style={{ fontSize: '14px', padding: '10px 22px', borderRadius: '10px' }}
+            onClick={() => setCurrentPhase('phase1')}
+          >
+            <ShieldCheck size={18} /> Phase 1: Forensic Safety (Checks 1–6)
+          </button>
+          <button
+            id="tab-switch-phase2"
+            className={`tab-btn ${currentPhase === 'phase2' ? 'active' : ''}`}
+            style={{ fontSize: '14px', padding: '10px 22px', borderRadius: '10px' }}
+            onClick={() => setCurrentPhase('phase2')}
+          >
+            <TrendingUp size={18} /> Phase 2: Business Quality (Checks 7–18)
+          </button>
+        </div>
+      </div>
+
+      {/* Conditional Phase View */}
+      {currentPhase === 'phase2' ? (
+        <Phase2View
+          initialTicker={formData.ticker}
+          initialPhase1Id={evaluation?.result?.verdict === 'CLEARED TO PHASE 2' ? evaluation.result.result_id : null}
+          onSwitchToPhase1={() => setCurrentPhase('phase1')}
+        />
+      ) : (
+        <>
+          {/* Main Control & Acquisition Card */}
+          <section className="glass-panel" style={{ padding: '24px', marginBottom: '32px' }}>
         <div
           style={{
             display: 'flex',
@@ -973,6 +1063,44 @@ export default function App() {
       {/* Results View */}
       {evaluation && (
         <section>
+          {/* Phase 2 Transition Callout if Cleared */}
+          {evaluation.result?.verdict === 'CLEARED TO PHASE 2' && (
+            <div
+              className="glass-panel"
+              style={{
+                padding: '16px 20px',
+                marginBottom: '20px',
+                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(99, 102, 241, 0.15))',
+                border: '1px solid #10b981',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '14px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <CheckCircle2 size={28} color="#10b981" />
+                <div>
+                  <div style={{ fontWeight: 700, color: '#10b981', fontSize: '15px' }}>
+                    GATEKEEPER VERDICT: CLEARED TO PHASE 2!
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#cbd5e1' }}>
+                    All 6 Forensic Safety Checks cleared. Ready for Operating Quality, Moat & Capital Allocation evaluation.
+                  </div>
+                </div>
+              </div>
+              <button
+                id="proceed-to-phase2-btn"
+                className="btn btn-primary"
+                style={{ padding: '10px 18px', fontSize: '14px' }}
+                onClick={() => setCurrentPhase('phase2')}
+              >
+                Proceed to Phase 2 Quality Check <ArrowRight size={16} />
+              </button>
+            </div>
+          )}
+
           {/* View Mode Switcher */}
           <div
             style={{
@@ -1007,9 +1135,18 @@ export default function App() {
           )}
         </section>
       )}
+    </>
+  )}
 
       {/* Field Coverage Matrix Modal */}
       <CoverageModal isOpen={coverageOpen} onClose={() => setCoverageOpen(false)} />
+
+      {/* Rules Engine Configuration Modal */}
+      <RulesConfigModal
+        isOpen={rulesModalOpen}
+        onClose={() => setRulesModalOpen(false)}
+        onConfigChanged={refreshRulesInfo}
+      />
 
       {/* Upload Validation Modal */}
       <UploadValidationModal

@@ -114,3 +114,58 @@ class WorkingCapitalCycleTier(str, Enum):
     SHORT_CYCLE_ASSET_LIGHT = "SHORT_CYCLE_ASSET_LIGHT"
     LENDING_INSTITUTION_NA = "LENDING_INSTITUTION_NA"
     TIER_OTHER_UNCLASSIFIED = "TIER_OTHER_UNCLASSIFIED"
+
+
+class Phase2Sector(str, Enum):
+    """
+    Phase 2 Industry Boundary Matrix profile categories (Phase2-Rules.md §2.5).
+    """
+    ASSET_LIGHT = "ASSET_LIGHT"         # SaaS, FMCG, Services
+    STANDARD = "STANDARD"               # Manufacturing, Retail
+    CAP_INTENSIVE = "CAP_INTENSIVE"     # Metals, Chem, Auto
+    REGULATED_INFRA = "REGULATED_INFRA" # Power, Toll, Pipe (>=70% regulated contract revenue)
+
+
+class Phase2CheckStatus(str, Enum):
+    """
+    Phase 2 5-state check grading (Phase2-Rules.md §0.1).
+    """
+    PASS = "PASS"
+    CONCERN = "CONCERN"
+    FAIL = "FAIL"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class Phase2Verdict(str, Enum):
+    """
+    Phase 2 Gatekeeper verdicts (Phase2-Rules.md §3).
+    """
+    CLEARED_TO_PHASE_3 = "CLEARED_TO_PHASE_3"
+    HOLD_WATCH_LIST = "HOLD_WATCH_LIST"
+    REJECT_AT_PHASE_2 = "REJECT_AT_PHASE_2"
+    HOLD_INCONCLUSIVE = "HOLD_INCONCLUSIVE"
+
+
+class Phase2CheckGroup(str, Enum):
+    """
+    Phase 2 check groupings (Phase2-Rules.md §0 / §4).
+    """
+    EARNINGS = "EARNINGS"       # Group A: What it earns (Checks 7-9)
+    LEVERAGE = "LEVERAGE"       # Group B: What it owes (Checks 10-15)
+    COLLECTION = "COLLECTION"   # Group C: How it collects (Check 16)
+    LONGEVITY = "LONGEVITY"     # Group D: Why it lasts (Checks 17-18)
+
+
+class MoatType(str, Enum):
+    """
+    Stated moat categories (Phase2-Rules.md Check 17).
+    """
+    BRAND = "BRAND"
+    SCALE = "SCALE"
+    LICENCE_REGULATORY = "LICENCE_REGULATORY"
+    SWITCHING_COSTS = "SWITCHING_COSTS"
+    NETWORK = "NETWORK"
+    COST_ADVANTAGE = "COST_ADVANTAGE"
+    NONE = "NONE"
+

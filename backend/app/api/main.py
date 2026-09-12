@@ -33,12 +33,48 @@ from backend.app.acquisition.adapters.pdf.classify import classify_pdf
 from backend.app.acquisition.review.store import review_store
 from backend.app.engine.orchestrator import run_phase1
 from backend.app.models.coverage import FIELD_COVERAGE_MATRIX
-from backend.app.models.enums import AuditOpinion, Confidence, PdfClass, ReportingBasis
+from backend.app.models.enums import (
+    AuditOpinion,
+    Confidence,
+    PdfClass,
+    Phase2Sector,
+    ReportingBasis,
+    Verdict,
+)
 from backend.app.persistence import get_store
 from backend.app.models.schemas import CompanyInput, Phase1Result
 from backend.app.rendering.analyst_table import render_analyst_report
 from backend.app.rendering.investor_prose import render_investor_report
 from backend.app.fixtures import make_clean_company_input
+
+from backend.app.models.phase2_schemas import CompanyPhase2Input, Phase2Result
+from backend.app.engine.phase2 import (
+    run_phase2,
+    Phase2GatekeeperError,
+    make_saas_company_input,
+    make_utility_company_input,
+    make_red_flag_company_input,
+    make_cash_hoarder_company_input,
+    make_deteriorating_company_input,
+)
+from backend.app.rendering.phase2 import (
+    render_phase2_analyst_table,
+    render_phase2_investor_report,
+)
+from backend.app.persistence.phase2_store import get_phase2_store
+from backend.app.engine.rules.config import RulesConfiguration
+from backend.app.engine.rules.registry import (
+    get_active_rules_config,
+    set_active_rules_config,
+    reset_to_default_config,
+    resolve_sector_from_keyword,
+)
+from backend.app.engine.rules.excel_io import (
+    generate_default_rules_workbook,
+    parse_rules_config_workbook,
+)
+
+phase2_store = get_phase2_store()
 
 app = FastAPI(
     title="Phase 1 Gatekeeper API",
@@ -662,6 +698,246 @@ def render_report_html(result_id: str):
         analyst=analyst_data,
     )
     return HTMLResponse(content=rendered)
+
+
+# --- Phase 2 Gatekeeper Endpoints (Business Quality Check) ------------------
+
+class Phase2EvaluationRequest(BaseModel):
+    company_input: CompanyPhase2Input
+    phase1_result_id: Optional[str] = None
+
+
+@app.post("/api/phase2/evaluate")
+def evaluate_phase2(req: Phase2EvaluationRequest):
+    """
+    Evaluates a company through Phase 2 Gatekeeper rules.
+    If phase1_result_id is provided, validates that Phase 1 passed.
+    """
+    p1_res = None
+    if req.phase1_result_id:
+        record = store.get_result(req.phase1_result_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Phase 1 result {req.phase1_result_id} not found")
+        p1_res = Phase1Result.model_validate(record["result"])
+
+    try:
+        p2_result = run_phase2(req.company_input, phase1_result=p1_res)
+    except Phase2GatekeeperError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    phase2_store.save_result(p2_result, req.company_input)
+    return {
+        "result": p2_result.model_dump(),
+        "analyst_table": render_phase2_analyst_table(p2_result),
+        "investor_report": render_phase2_investor_report(p2_result),
+    }
+
+
+@app.get("/api/phase2/fixtures/{fixture_name}")
+def get_phase2_fixture(fixture_name: str):
+    """
+    Returns canonical test fixtures for Phase 2:
+    saas, utility, red_flag, cash_hoarder, deteriorating.
+    """
+    fixtures_map = {
+        "saas": make_saas_company_input,
+        "utility": make_utility_company_input,
+        "red_flag": make_red_flag_company_input,
+        "cash_hoarder": make_cash_hoarder_company_input,
+        "deteriorating": make_deteriorating_company_input,
+    }
+    factory = fixtures_map.get(fixture_name.lower())
+    if not factory:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown fixture: '{fixture_name}'. Available: {list(fixtures_map.keys())}"
+        )
+    return factory().model_dump()
+
+
+@app.get("/api/phase2/results/{result_id}")
+def get_phase2_result(result_id: str):
+    """Fetches stored Phase 2 result."""
+    res = phase2_store.get_result(result_id)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"Phase 2 result {result_id} not found")
+    inp = phase2_store.get_input(result_id)
+    return {
+        "result": res.model_dump(),
+        "company_input": inp.model_dump() if inp else None,
+        "analyst_table": render_phase2_analyst_table(res),
+        "investor_report": render_phase2_investor_report(res),
+    }
+
+
+@app.get("/api/phase2/results/{result_id}/report")
+def get_phase2_report(result_id: str, format: str = "investor"):
+    """
+    Returns the formatted text of the Phase 2 report.
+    format='investor' (default) returns user.md plain-English prose.
+    format='analyst' returns §4 technical markdown table.
+    """
+    res = phase2_store.get_result(result_id)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"Phase 2 result {result_id} not found")
+    if format == "analyst":
+        content = render_phase2_analyst_table(res)
+    else:
+        content = render_phase2_investor_report(res)
+    return Response(content=content, media_type="text/markdown")
+
+
+# ==============================================================================
+# Dynamic Rules Configuration Endpoints (Docs/rule-engine-implementation.md)
+# ==============================================================================
+
+@app.get("/api/rules/config")
+def get_rules_config():
+    """
+    Returns the currently active dynamic rules configuration summary.
+    """
+    cfg = get_active_rules_config()
+    return {
+        "version": cfg.version,
+        "source": cfg.source,
+        "description": cfg.description,
+        "updated_at": cfg.updated_at,
+        "phase1": cfg.phase1.model_dump(),
+        "phase2_matrix": {k: v.model_dump() for k, v in cfg.phase2_matrix.items()},
+        "sector_mappings": [m.model_dump() for m in cfg.sector_mappings],
+    }
+
+
+@app.get("/api/rules/config/download")
+def download_rules_config_workbook():
+    """
+    Downloads the official 3-sheet Rules_Config.xlsx workbook.
+    """
+    excel_bytes = generate_default_rules_workbook()
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="Rules_Config.xlsx"'},
+    )
+
+
+@app.post("/api/rules/config/upload")
+async def upload_rules_config_workbook(file: UploadFile = File(...)):
+    """
+    Uploads and activates a custom Rules_Config.xlsx workbook.
+    Hot-reloads the active thresholds for Phase 1 and Phase 2 immediately.
+    """
+    if not (file.filename and file.filename.endswith((".xlsx", ".xlsm"))):
+        raise HTTPException(status_code=400, detail="Only Excel .xlsx workbooks are supported")
+
+    content = await file.read()
+    try:
+        cfg = parse_rules_config_workbook(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse Rules_Config.xlsx: {str(e)}")
+
+    set_active_rules_config(cfg)
+    return {
+        "status": "SUCCESS",
+        "message": "Custom Rules Configuration successfully loaded and activated!",
+        "version": cfg.version,
+        "source": cfg.source,
+        "phase1_metrics_count": len(cfg.phase1.model_dump()),
+        "phase2_sectors_count": len(cfg.phase2_matrix),
+        "sector_mappings_count": len(cfg.sector_mappings),
+        "updated_at": cfg.updated_at,
+    }
+
+
+@app.post("/api/rules/config/reset")
+def reset_rules_config():
+    """
+    Resets the active rules configuration to standard calibrated defaults.
+    """
+    cfg = reset_to_default_config()
+    return {
+        "status": "SUCCESS",
+        "message": "Rules Configuration reset to baseline defaults.",
+        "source": cfg.source,
+        "updated_at": cfg.updated_at,
+    }
+
+
+class SectorResolveRequest(BaseModel):
+    keyword: str
+
+
+@app.post("/api/rules/resolve-sector")
+def resolve_sector(req: SectorResolveRequest):
+    """
+    Resolves an industry keyword to a Phase 2 Sector Profile using the active Sector_Mapping sheet.
+    """
+    sector, note = resolve_sector_from_keyword(req.keyword)
+    return {
+        "keyword": req.keyword,
+        "resolved_sector": sector.value,
+        "reason": note or "Defaulted to Standard sector",
+    }
+
+
+class FullEvaluationRequest(BaseModel):
+    phase1_input: CompanyInput
+    phase2_input: CompanyPhase2Input
+
+
+@app.post("/api/rules/evaluate-full")
+def evaluate_full_gatekeeper(req: FullEvaluationRequest):
+    """
+    Runs the full end-to-end Gatekeeper pipeline (Phase 1 + Phase 2)
+    using the active dynamic rules configuration and sector mappings.
+    """
+    active_cfg = get_active_rules_config()
+
+    # 1. Run Phase 1
+    p1_result = run_phase1(req.phase1_input, rule_config=active_cfg.phase1)
+    store.save_result(p1_result, req.phase1_input)
+
+    # 2. If Phase 1 rejects, stop and return Phase 1 rejection
+    if p1_result.verdict != Verdict.CLEARED_TO_PHASE_2:
+        return {
+            "phase1": {
+                "result": p1_result.model_dump(),
+                "verdict": p1_result.verdict.value,
+            },
+            "phase2": None,
+            "overall_status": f"REJECTED_AT_PHASE_1 ({p1_result.verdict.value})",
+            "active_rules_source": active_cfg.source,
+        }
+
+    # 3. If Phase 2 sector needs keyword resolution from company sector text
+    p2_inp = req.phase2_input
+    if not p2_inp.sector or p2_inp.sector == Phase2Sector.STANDARD:
+        if req.phase1_input.industry_sector:
+            resolved_sec, _ = resolve_sector_from_keyword(req.phase1_input.industry_sector, active_cfg)
+            p2_inp.sector = resolved_sec
+
+    # 4. Run Phase 2
+    try:
+        p2_result = run_phase2(p2_inp, phase1_result=p1_result, matrix_config=active_cfg.phase2_matrix)
+    except Phase2GatekeeperError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    phase2_store.save_result(p2_result, p2_inp)
+
+    return {
+        "phase1": {
+            "result": p1_result.model_dump(),
+            "verdict": p1_result.verdict.value,
+        },
+        "phase2": {
+            "result": p2_result.model_dump(),
+            "verdict": p2_result.verdict.value,
+            "analyst_table": render_phase2_analyst_table(p2_result),
+            "investor_report": render_phase2_investor_report(p2_result),
+        },
+        "overall_status": p2_result.verdict.value,
+        "active_rules_source": active_cfg.source,
+    }
 
 
 # Mount frontend dist static files if built
