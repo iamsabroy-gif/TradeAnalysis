@@ -32,10 +32,10 @@ def check_robots(url: str, user_agent: str = "Phase1Gatekeeper/1.0", timeout: fl
                 if resp.status_code == 200:
                     rp.parse(resp.text.splitlines())
                 else:
-                    rp.allow_all = True
+                    rp.parse(["User-agent: *", "Allow: /"])
         except Exception as e:
             logger.debug(f"Could not fetch robots.txt from {robots_url}: {e}")
-            rp.allow_all = True
+            rp.parse(["User-agent: *", "Allow: /"])
 
         _ROBOTS_CACHE[domain] = rp
 

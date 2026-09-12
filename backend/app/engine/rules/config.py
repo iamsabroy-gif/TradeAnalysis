@@ -96,6 +96,48 @@ class SectorThresholdConfig(BaseModel):
 Phase2MatrixConfig = Dict[str, SectorThresholdConfig]
 
 
+class Phase2RuleConfig(BaseModel):
+    """
+    User-configurable thresholds for non-sector Phase 2 quality checks (Checks 7–18).
+    """
+    ebitda_margin_var_fail_pct: float = Field(
+        default=-25.0,
+        description="EBITDA margin deterioration relative variance fail ceiling (< -25%)"
+    )
+    credit_rating_fail_floor: str = Field(
+        default="BBB-",
+        description="Minimum investment-grade credit rating floor (< BBB- triggers concern/fail)"
+    )
+    loans_advances_net_worth_fail_pct: float = Field(
+        default=25.0,
+        description="Loans and advances as % of Net Worth triggering concern/fail (> 25%)"
+    )
+    guarantees_net_worth_fail_pct: float = Field(
+        default=50.0,
+        description="Corporate guarantees as % of Net Worth triggering concern/fail (> 50%)"
+    )
+    moat_evidence_count_fail_floor: int = Field(
+        default=2,
+        description="Minimum independent moat evidence items required (< 2 triggers concern)"
+    )
+
+
+class MasterRuleDefinition(BaseModel):
+    """
+    Specification of a check in the Master Rule Definitions schema (Docs/Rules/baseline-engine-implementation.md §1.1).
+    Covers all 18 checks across Phase 1 and Phase 2.
+    """
+    phase: int = Field(description="Evaluation phase (1 or 2)")
+    check_num: int = Field(description="Check number (1 to 18)")
+    check_name: str = Field(description="Descriptive check title")
+    input_metric: str = Field(description="Primary input metric name")
+    logic_type: str = Field(description="Categorical, Numeric, Ratio, Count, Relative, Trend, Boolean")
+    default_op: str = Field(description="Comparison operator (!=, >, <, Deteriorate, Decline)")
+    default_fail_value: str = Field(description="Default value triggering FAIL")
+    sector_aware: bool = Field(description="True if threshold varies by industry sector matrix")
+    description: Optional[str] = Field(default=None, description="Detailed check rationale and trigger condition")
+
+
 class SectorKeywordItem(BaseModel):
     """
     Mapping an industry keyword / sub-sector to its Sector Profile.
@@ -112,9 +154,11 @@ class RulesConfiguration(BaseModel):
     """
     version: str = "1.0.0"
     source: str = "DEFAULT"  # "DEFAULT" | "EXCEL_UPLOAD" | "CUSTOM"
-    description: str = "Baseline Calibrated Rules Configuration"
+    description: str = "Baseline Calibrated Rules Configuration (Full 18-Check Engine)"
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    master_rules: List[MasterRuleDefinition] = Field(default_factory=list)
     phase1: Phase1RuleConfig = Field(default_factory=Phase1RuleConfig)
+    phase2_rules: Phase2RuleConfig = Field(default_factory=Phase2RuleConfig)
     phase2_matrix: Dict[str, SectorThresholdConfig] = Field(default_factory=dict)
     sector_mappings: List[SectorKeywordItem] = Field(default_factory=list)
 
@@ -122,7 +166,7 @@ class RulesConfiguration(BaseModel):
 def create_default_rules_configuration() -> RulesConfiguration:
     """
     Constructs the standard, canonically calibrated configuration matching
-    Phase 1 Rules (§1-§8) and Phase 2 Rules (§2.5).
+    Phase 1 Rules (§1-§8), Phase 2 Rules (§2.5), and Master Rule Definitions (§1.1).
     """
     matrix: Dict[str, SectorThresholdConfig] = {
         Phase2Sector.ASSET_LIGHT.value: SectorThresholdConfig(
@@ -211,11 +255,110 @@ def create_default_rules_configuration() -> RulesConfiguration:
         SectorKeywordItem(keyword="Airport Concession", sector=Phase2Sector.REGULATED_INFRA, notes="AERA regulated aeronautical tariffs"),
     ]
 
+    master_rules: List[MasterRuleDefinition] = [
+        # Phase 1 Checks (Forensic Safety Gate)
+        MasterRuleDefinition(
+            phase=1, check_num=1, check_name="Auditor Integrity", input_metric="Audit_Opinion",
+            logic_type="Categorical", default_op="!=", default_fail_value="Clean", sector_aware=False,
+            description="Audit opinion must be unqualified/clean; mid-tenure auditor resignations trigger FAIL"
+        ),
+        MasterRuleDefinition(
+            phase=1, check_num=2, check_name="Promoter Pledge", input_metric="Pledge_Pct",
+            logic_type="Numeric", default_op=">", default_fail_value="10%", sector_aware=False,
+            description="Promoter pledged shares must not exceed 10% of holding (stricter 5% if holding < 35%)"
+        ),
+        MasterRuleDefinition(
+            phase=1, check_num=3, check_name="RPT Leakage", input_metric="RPT_Revenue_Pct",
+            logic_type="Numeric", default_op=">", default_fail_value="10%", sector_aware=False,
+            description="Related Party Transactions must not exceed 10% of revenue without structural justification"
+        ),
+        MasterRuleDefinition(
+            phase=1, check_num=4, check_name="Contingent Liab", input_metric="Cont_Liab_NW_Pct",
+            logic_type="Numeric", default_op=">", default_fail_value="15%", sector_aware=True,
+            description="Total contingent liabilities must not exceed 15% of net worth; tax/legal claims capped at 10%"
+        ),
+        MasterRuleDefinition(
+            phase=1, check_num=5, check_name="Cash Conversion", input_metric="CFO_PAT_Ratio",
+            logic_type="Ratio", default_op="<", default_fail_value="0.80", sector_aware=False,
+            description="5-year cumulative CFO / PAT ratio must meet or exceed 0.80 conversion floor"
+        ),
+        MasterRuleDefinition(
+            phase=1, check_num=6, check_name="Exec Stability", input_metric="CFO_Changes",
+            logic_type="Count", default_op=">", default_fail_value="1", sector_aware=False,
+            description="No more than 1 mid-tenure CFO resignation allowed within rolling 3 years"
+        ),
+
+        # Phase 2 Checks (Business Quality & Capital Allocation)
+        MasterRuleDefinition(
+            phase=2, check_num=7, check_name="RoCE", input_metric="Median_RoCE",
+            logic_type="Numeric", default_op="<", default_fail_value="10%", sector_aware=True,
+            description="5-year median Return on Capital Employed hurdle calibrated to industry capital intensity"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=8, check_name="Margin Trend", input_metric="EBITDA_Margin_Var",
+            logic_type="Relative", default_op="<", default_fail_value="-25%", sector_aware=False,
+            description="EBITDA margin trend must not deteriorate by more than 25% relative to historical mean"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=9, check_name="Seg Economics", input_metric="Seg_Rev_Margin_Trend",
+            logic_type="Trend", default_op="Deteriorate", default_fail_value="N/A", sector_aware=False,
+            description="Core operating segment margin and revenue trajectory across 3-year lookback"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=10, check_name="Leverage", input_metric="NetDebt_EBITDA",
+            logic_type="Numeric", default_op=">", default_fail_value="3.0x", sector_aware=True,
+            description="Net Debt to EBITDA quantum hurdle calibrated to sector profile"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=11, check_name="Int Coverage", input_metric="Interest_Coverage",
+            logic_type="Numeric", default_op="<", default_fail_value="2.0x", sector_aware=True,
+            description="EBIT to Finance Cost coverage floor calibrated to sector debt capacity"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=12, check_name="Maturity", input_metric="ST_Debt_Coverage",
+            logic_type="Boolean", default_op="!=", default_fail_value="True", sector_aware=False,
+            description="Short-term debt maturity profile and liquid refinancing cushion"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=13, check_name="Credit Rating", input_metric="Credit_Rating",
+            logic_type="Categorical", default_op="<", default_fail_value="BBB-", sector_aware=False,
+            description="Investment-grade domestic credit rating from registered CRA"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=14, check_name="Loans Given", input_metric="Loan_NW_Pct",
+            logic_type="Numeric", default_op=">", default_fail_value="25%", sector_aware=False,
+            description="Loans and advances extended to third parties or related entities as % of Net Worth"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=15, check_name="Guarantees", input_metric="Guar_NW_Pct",
+            logic_type="Numeric", default_op=">", default_fail_value="50%", sector_aware=False,
+            description="Corporate guarantees and off-balance sheet exposures as % of Net Worth"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=16, check_name="WC Cycle", input_metric="CCC_Deterioration",
+            logic_type="Numeric", default_op=">", default_fail_value="60 days", sector_aware=True,
+            description="Cash conversion cycle 3-year expansion and debtor days critical ceiling"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=17, check_name="Moat Corrob", input_metric="Moat_Evidence_Count",
+            logic_type="Count", default_op="<", default_fail_value="2", sector_aware=False,
+            description="Independent corroboration of structural competitive moat factors"
+        ),
+        MasterRuleDefinition(
+            phase=2, check_num=18, check_name="Comp Position", input_metric="Market_Share_Trend",
+            logic_type="Trend", default_op="Decline", default_fail_value="N/A", sector_aware=False,
+            description="Market share trajectory and competitive positioning in core market"
+        ),
+    ]
+
     return RulesConfiguration(
         version="1.0.0",
         source="DEFAULT",
-        description="Standard Calibrated Rules Configuration (Phase 1 & Phase 2)",
+        description="Standard Baseline Engine Master Configuration (All 18 Checks)",
+        master_rules=master_rules,
         phase1=Phase1RuleConfig(),
+        phase2_rules=Phase2RuleConfig(),
         phase2_matrix=matrix,
         sector_mappings=mappings,
     )
+

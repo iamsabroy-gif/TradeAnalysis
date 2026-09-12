@@ -59,7 +59,13 @@ class WorkbookUploadAdapter(SourceAdapter):
         else:
             # openpyxl with data_only=True disables formula execution
             wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True)
-            ws = wb.active
+            ws: Any = wb.active
+            if ws is None:
+                return AdapterResult(
+                    adapter=self.name,
+                    fields=[],
+                    errors=[AdapterError(field_name="file", message="Empty workbook", fatal=True)],
+                )
             header = [str(cell.value or "").strip().lower() for cell in ws[1]]
             for row in ws.iter_rows(min_row=2, values_only=True):
                 if not any(row):

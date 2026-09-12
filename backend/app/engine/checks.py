@@ -143,6 +143,7 @@ def check1_auditor_regulator(
 
     if (
         input_data.regulatory_action.active_or_past_5y is True
+        and input_data.regulatory_action.nature is not None
         and input_data.regulatory_action.nature in _DISQUALIFYING_REGULATORY_NATURES
     ):
         fail_reasons.append(f"REGULATORY_ACTION:{input_data.regulatory_action.nature.value}")
@@ -809,15 +810,18 @@ def check5_cash_conversion(
                 f"{negative_cfo_years} of last 5 years had negative CFO "
                 f"(>= {thresholds['negative_years_trigger']} triggers this sector's tier)"
             )
-        if hard_floor_breach:
+        if hard_floor_breach and cfo_pat_ratio is not None:
             trigger_desc.append(f"CFO/PAT ratio {round(cfo_pat_ratio, 3)} < 0.50 global hard floor")
-        elif tier_floor_breach:
+        elif tier_floor_breach and cfo_pat_ratio is not None:
             trigger_desc.append(
                 f"CFO/PAT ratio {round(cfo_pat_ratio, 3)} < {thresholds['cfo_pat_floor']} sector tier threshold"
             )
         trigger_text = "; ".join(trigger_desc)
 
-        if verified_ok:
+        if verified_ok and verification is not None:
+            raw_notes = verification.get("notes")
+            notes_list = raw_notes if isinstance(raw_notes, list) else []
+            notes_str = "; ".join(str(n) for n in notes_list)
             uof_fields = fields_used + [
                 "revenue_last_5y",
                 "cumulative_working_capital_change_5y",
@@ -830,7 +834,7 @@ def check5_cash_conversion(
                 status=CheckStatus.PASS,
                 finding=(
                     "WARNING — " + trigger_text + ", but verified as business-expansion-linked "
-                    "per Rules §8.4-H: " + "; ".join(verification["notes"]) + suffix
+                    "per Rules §8.4-H: " + notes_str + suffix
                 ),
                 reason_code="CASH_CONVERSION_VERIFIED_WARNING",
                 fields_used=uof_fields,
@@ -854,12 +858,15 @@ def check5_cash_conversion(
                 basis=basis,
             )
 
+        raw_notes = verification.get("notes")
+        notes_list = raw_notes if isinstance(raw_notes, list) else []
+        notes_str = "; ".join(str(n) for n in notes_list)
         return CheckResult(
             check_id=5,
             status=CheckStatus.FAIL,
             finding=(
                 trigger_text + " — use-of-funds verification (§8.4-H) attempted and did not "
-                "clear: " + "; ".join(verification["notes"]) + suffix
+                "clear: " + notes_str + suffix
             ),
             reason_code="CASH_CONVERSION_TRIGGER_FAILED_VERIFICATION",
             fields_used=fields_used,

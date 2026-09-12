@@ -35,7 +35,7 @@ def classify_pdf(pdf_input: Union[Path, str, bytes]) -> Tuple[PdfClass, int, Opt
     sample_limit = min(page_count, 30)
     for i in range(sample_limit):
         page = doc[i]
-        text = page.get_text("text")
+        text: str = str(page.get_text("text"))
         char_count = len(text.strip())
         total_chars += char_count
         if char_count > 100:

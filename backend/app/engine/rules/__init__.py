@@ -4,7 +4,9 @@ Provides decoupled, user-configurable rules via Excel upload.
 """
 
 from backend.app.engine.rules.config import (
+    MasterRuleDefinition,
     Phase1RuleConfig,
+    Phase2RuleConfig,
     SectorThresholdConfig,
     Phase2MatrixConfig,
     SectorKeywordItem,
@@ -21,9 +23,15 @@ from backend.app.engine.rules.excel_io import (
     generate_default_rules_workbook,
     parse_rules_config_workbook,
 )
+from backend.app.engine.rules.baseline_engine import (
+    BaselineEngine,
+    BaselineEvaluationResult,
+)
 
 __all__ = [
+    "MasterRuleDefinition",
     "Phase1RuleConfig",
+    "Phase2RuleConfig",
     "SectorThresholdConfig",
     "Phase2MatrixConfig",
     "SectorKeywordItem",
@@ -35,4 +43,6 @@ __all__ = [
     "resolve_sector_from_keyword",
     "generate_default_rules_workbook",
     "parse_rules_config_workbook",
+    "BaselineEngine",
+    "BaselineEvaluationResult",
 ]

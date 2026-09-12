@@ -230,21 +230,26 @@ def verify_use_of_funds(
     Returns None (not {"verified": False}) if the fields needed to attempt
     verification are missing — callers MUST treat None as "cannot verify".
     """
-    required = [
-        input_data.revenue_last_5y,
-        input_data.cumulative_working_capital_change_5y,
-        input_data.liquid_cushion_first_year,
-        input_data.liquid_cushion_last_year,
-    ]
-    if any(v is None for v in required):
+    if (
+        input_data.revenue_last_5y is None
+        or input_data.cumulative_working_capital_change_5y is None
+        or input_data.liquid_cushion_first_year is None
+        or input_data.liquid_cushion_last_year is None
+    ):
         return None
-    if len(input_data.revenue_last_5y) < 2 or input_data.revenue_last_5y[0] <= 0:
+
+    rev = input_data.revenue_last_5y
+    wc_change = input_data.cumulative_working_capital_change_5y
+    cushion_first = input_data.liquid_cushion_first_year
+    cushion_last = input_data.liquid_cushion_last_year
+
+    if len(rev) < 2 or rev[0] <= 0:
         return None  # can't compute a first->last growth ratio
 
     notes: List[str] = []
 
     # (a) Growth is real
-    revenue_growth_ratio = input_data.revenue_last_5y[-1] / input_data.revenue_last_5y[0]
+    revenue_growth_ratio = rev[-1] / rev[0]
     growth_ok = revenue_growth_ratio >= 1.5
     notes.append(
         f"(a) revenue grew {round(revenue_growth_ratio, 2)}x over the window "
@@ -255,7 +260,7 @@ def verify_use_of_funds(
     gap = cumulative_pat - cumulative_cfo
     if gap <= 0:
         return None  # only meaningful when there IS a shortfall to explain
-    wc_coverage = abs(input_data.cumulative_working_capital_change_5y) / abs(gap)
+    wc_coverage = abs(wc_change) / abs(gap)
     wc_ok = wc_coverage >= 0.60
     notes.append(
         f"(b) working-capital change covers {round(wc_coverage * 100, 1)}% of the "
@@ -263,8 +268,8 @@ def verify_use_of_funds(
     )
 
     # (c) Not hoarding
-    cushion_pct_first = input_data.liquid_cushion_first_year / input_data.revenue_last_5y[0]
-    cushion_pct_last = input_data.liquid_cushion_last_year / input_data.revenue_last_5y[-1]
+    cushion_pct_first = cushion_first / rev[0]
+    cushion_pct_last = cushion_last / rev[-1]
     hoarding_ok = cushion_pct_last <= cushion_pct_first * 1.10
     notes.append(
         f"(c) liquid cushion is {round(cushion_pct_last * 100, 1)}% of revenue in the "

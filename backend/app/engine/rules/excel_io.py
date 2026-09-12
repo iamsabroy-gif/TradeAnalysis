@@ -13,8 +13,10 @@ from openpyxl.utils import get_column_letter
 
 from backend.app.models.enums import Phase2Sector
 from backend.app.engine.rules.config import (
+    MasterRuleDefinition,
     Phase1RuleConfig,
     Phase2MatrixConfig,
+    Phase2RuleConfig,
     RulesConfiguration,
     SectorKeywordItem,
     SectorThresholdConfig,
@@ -61,49 +63,53 @@ def _clean_num(val: Any) -> Optional[float]:
         return None
 
 
-def generate_default_rules_workbook() -> bytes:
+def generate_default_rules_workbook(config: Optional[RulesConfiguration] = None) -> bytes:
     """
-    Generates the canonical 3-sheet `Rules_Config.xlsx` workbook template.
+    Generates the canonical 3-sheet `Master_Rule_Definitions.xlsx` workbook template
+    as specified in Docs/Rules/baseline-engine-implementation.md §1.
+    Sheets:
+      1. Master_Rule_Definitions (All 18 Checks across Phase 1 and Phase 2)
+      2. Sector_Boundary_Matrix (Industry boundary hurdles across 4 sectors)
+      3. Company_Sector_Map (Taxonomy keyword to Sector profile mapping)
     """
     wb = openpyxl.Workbook()
-    # Remove default sheet
-    wb.remove(wb.active)
+    wb.remove(wb.active)  # Remove default blank sheet
 
-    config = create_default_rules_configuration()
+    if config is None:
+        config = create_default_rules_configuration()
 
     # ----------------------------------------------------
-    # Sheet 1: Phase1_Thresholds
+    # Sheet 1: Master_Rule_Definitions (All 18 Checks)
     # ----------------------------------------------------
-    ws1 = wb.create_sheet(title="Phase1_Thresholds")
+    ws1: Any = wb.create_sheet(title="Master_Rule_Definitions")
     ws1.views.sheetView[0].showGridLines = True
 
-    headers1 = ["Check #", "Metric", "Fail_Threshold", "Operator", "Sector_Aware?", "Note"]
+    headers1 = [
+        "Phase", "Check #", "Check Name", "Input Metric", "Logic Type",
+        "Default Op", "Default Fail Value", "Sector-Aware?", "Description"
+    ]
     ws1.append(headers1)
 
-    rows1 = [
-        [2, "Promoter_Pledge", f"{config.phase1.promoter_pledge_fail_pct}%", ">", "No", "Pledge % of promoter holding triggering FAIL"],
-        [2, "Promoter_Pledge_Low_Holding_Floor", f"{config.phase1.promoter_pledge_low_holding_floor_pct}%", "<", "No", "Promoter holding floor triggering tighter pledge rule"],
-        [2, "Promoter_Pledge_Low_Holding_Fail", f"{config.phase1.promoter_pledge_low_holding_fail_pct}%", ">", "No", "Tighter pledge ceiling when promoter holding < 35%"],
-        [2, "Promoter_Pledge_Total_Shares", f"{config.phase1.promoter_pledge_total_shares_fail_pct}%", ">", "No", "Pledged shares as % of total shares triggering FAIL"],
-        [3, "RPT_Sales_Purchases", f"{config.phase1.rpt_sales_purchases_fail_pct}%", ">", "No", "RPT sales + purchases as % of revenue"],
-        [4, "Contingent_Liabilities", f"{config.phase1.contingent_liabilities_net_worth_fail_pct}%", ">", "Yes", "Total contingent liabilities as % of net worth"],
-        [4, "Litigation_Claims", f"{config.phase1.litigation_claims_net_worth_fail_pct}%", ">", "No", "Tax & litigation claims as % of net worth"],
-        [5, "CFO_PAT_Ratio", f"{config.phase1.cfo_pat_ratio_fail_floor:.2f}", "<", "No", "5-year cumulative CFO / PAT conversion floor"],
-        [6, "Legal_Fee_Surge", f"{config.phase1.legal_fee_surge_fail_pct}%", ">", "No", "YoY legal fee surge triggering FAIL if unexplained"],
-        [6, "Legal_Audit_Fee_Multiplier", f"{config.phase1.legal_to_audit_fee_multiplier:.1f}x", ">", "No", "Ratio of legal fees to audit fees triggering FAIL"],
-    ]
+    for rule in config.master_rules:
+        ws1.append([
+            rule.phase,
+            rule.check_num,
+            rule.check_name,
+            rule.input_metric,
+            rule.logic_type,
+            rule.default_op,
+            rule.default_fail_value,
+            "Yes" if rule.sector_aware else "No",
+            rule.description
+        ])
 
-    for r_idx, row in enumerate(rows1, start=2):
-        ws1.append(row)
-
-    # Style Sheet 1
     for col in range(1, len(headers1) + 1):
         cell = ws1.cell(row=1, column=col)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    for r_idx in range(2, len(rows1) + 2):
+    for r_idx in range(2, len(config.master_rules) + 2):
         is_alt = (r_idx % 2 == 0)
         for col_idx in range(1, len(headers1) + 1):
             cell = ws1.cell(row=r_idx, column=col_idx)
@@ -111,35 +117,34 @@ def generate_default_rules_workbook() -> bytes:
             cell.border = THIN_BORDER
             if is_alt:
                 cell.fill = ALT_FILL
-            if col_idx in [1, 3, 4, 5]:
+            if col_idx in [1, 2, 5, 6, 7, 8]:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            elif col_idx == 6:
+            elif col_idx == 9:
                 cell.font = NOTE_FONT
 
     # ----------------------------------------------------
-    # Sheet 2: Phase2_Matrix
+    # Sheet 2: Sector_Boundary_Matrix
     # ----------------------------------------------------
-    ws2 = wb.create_sheet(title="Phase2_Matrix")
+    ws2: Any = wb.create_sheet(title="Sector_Boundary_Matrix")
     ws2.views.sheetView[0].showGridLines = True
 
-    headers2 = ["Sector Profile", "Metric", "Pass_Threshold", "Fail_Threshold", "Operator", "Unit", "Note"]
+    headers2 = ["Sector Profile", "Metric", "Pass_Threshold", "Fail_Threshold", "Critical_Cap", "Operator", "Unit", "Note"]
     ws2.append(headers2)
 
     rows2 = []
     for sector_key, thresh in config.phase2_matrix.items():
         rows2.extend([
-            [thresh.sector.value, "RoCE", f"{thresh.roce_pass_floor}%", f"{thresh.roce_fail_ceiling}%", "Range", "%", "Return on Capital Employed (5-yr median)"],
-            [thresh.sector.value, "NetDebt_EBITDA", f"{thresh.net_debt_ebitda_pass_ceiling:.1f}x", f"{thresh.net_debt_ebitda_fail_floor:.1f}x", "Range", "x", "Net Debt to EBITDA (pass <= ceiling, fail > floor)"],
-            [thresh.sector.value, "Interest_Coverage", f"{thresh.interest_coverage_pass_floor:.1f}x", f"{thresh.interest_coverage_fail_ceiling:.1f}x", "Range", "x", "EBIT to Finance Cost coverage floor"],
-            [thresh.sector.value, "Max_ST_Debt_Pct", f"{thresh.max_st_debt_concern_pct}%", f"{thresh.max_st_debt_concern_pct}%", ">", "%", "Short-term debt % of total debt concern threshold"],
-            [thresh.sector.value, "CCC_Deterioration_Days", f"{thresh.ccc_deterioration_fail_days:.0f}", f"{thresh.ccc_deterioration_fail_days:.0f}", ">", "days", "3-year rise in Cash Conversion Cycle"],
-            [thresh.sector.value, "Max_Receivable_Days", f"{thresh.max_receivable_days_critical_cap:.0f}", f"{thresh.max_receivable_days_critical_cap:.0f}", ">", "days", "Critical receivable days ceiling"],
+            [thresh.sector.value, "RoCE", f"{thresh.roce_pass_floor}%", f"{thresh.roce_fail_ceiling}%", "N/A", "Range", "%", "Return on Capital Employed (5-yr median)"],
+            [thresh.sector.value, "NetDebt_EBITDA", f"{thresh.net_debt_ebitda_pass_ceiling:.1f}x", f"{thresh.net_debt_ebitda_fail_floor:.1f}x", "N/A", "Range", "x", "Net Debt to EBITDA (pass <= ceiling, fail > floor)"],
+            [thresh.sector.value, "Interest_Coverage", f"{thresh.interest_coverage_pass_floor:.1f}x", f"{thresh.interest_coverage_fail_ceiling:.1f}x", "N/A", "Range", "x", "EBIT to Finance Cost coverage floor"],
+            [thresh.sector.value, "Max_ST_Debt_Pct", f"{thresh.max_st_debt_concern_pct}%", f"{thresh.max_st_debt_concern_pct}%", "N/A", ">", "%", "Short-term debt % of total debt concern threshold"],
+            [thresh.sector.value, "CCC_Det", f"{thresh.ccc_deterioration_fail_days:.0f} days", f"{thresh.ccc_deterioration_fail_days:.0f} days", f"{thresh.max_receivable_days_critical_cap:.0f} days", ">", "days", "3-year rise in Cash Conversion Cycle"],
+            [thresh.sector.value, "Receivable_Days", f"{thresh.max_receivable_days_critical_cap:.0f} days", f"{thresh.max_receivable_days_critical_cap:.0f} days", f"{thresh.max_receivable_days_critical_cap:.0f} days", ">", "days", "Critical receivable days ceiling"],
         ])
 
     for row in rows2:
         ws2.append(row)
 
-    # Style Sheet 2
     for col in range(1, len(headers2) + 1):
         cell = ws2.cell(row=1, column=col)
         cell.fill = HEADER_FILL
@@ -154,35 +159,30 @@ def generate_default_rules_workbook() -> bytes:
             cell.border = THIN_BORDER
             if is_alt:
                 cell.fill = ALT_FILL
-            if col_idx in [1, 3, 4, 5, 6]:
+            if col_idx in [1, 3, 4, 5, 6, 7]:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            elif col_idx == 7:
+            elif col_idx == 8:
                 cell.font = NOTE_FONT
 
     # ----------------------------------------------------
-    # Sheet 3: Sector_Mapping
+    # Sheet 3: Company_Sector_Map
     # ----------------------------------------------------
-    ws3 = wb.create_sheet(title="Sector_Mapping")
+    ws3: Any = wb.create_sheet(title="Company_Sector_Map")
     ws3.views.sheetView[0].showGridLines = True
 
     headers3 = ["Industry Keyword", "Sector Profile", "Notes"]
     ws3.append(headers3)
 
-    rows3 = []
     for item in config.sector_mappings:
-        rows3.append([item.keyword, item.sector.value, item.notes or ""])
+        ws3.append([item.keyword, item.sector.value, item.notes or ""])
 
-    for row in rows3:
-        ws3.append(row)
-
-    # Style Sheet 3
     for col in range(1, len(headers3) + 1):
         cell = ws3.cell(row=1, column=col)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    for r_idx in range(2, len(rows3) + 2):
+    for r_idx in range(2, len(config.sector_mappings) + 2):
         is_alt = (r_idx % 2 == 0)
         for col_idx in range(1, len(headers3) + 1):
             cell = ws3.cell(row=r_idx, column=col_idx)
@@ -195,8 +195,63 @@ def generate_default_rules_workbook() -> bytes:
             elif col_idx == 3:
                 cell.font = NOTE_FONT
 
-    # Auto-fit column widths for all sheets
-    for ws in [ws1, ws2, ws3]:
+    # ----------------------------------------------------
+    # Sheet 4: Phase1_Thresholds (Compatibility Alias)
+    # ----------------------------------------------------
+    ws4: Any = wb.create_sheet(title="Phase1_Thresholds")
+    ws4.views.sheetView[0].showGridLines = True
+    headers4 = ["Check #", "Metric", "Fail_Threshold", "Operator", "Sector_Aware?", "Note"]
+    ws4.append(headers4)
+    rows4 = [
+        [2, "Promoter_Pledge", f"{config.phase1.promoter_pledge_fail_pct}%", ">", "No", "Pledge % of promoter holding triggering FAIL"],
+        [2, "Promoter_Pledge_Low_Holding_Floor", f"{config.phase1.promoter_pledge_low_holding_floor_pct}%", "<", "No", "Promoter holding floor triggering tighter pledge rule"],
+        [2, "Promoter_Pledge_Low_Holding_Fail", f"{config.phase1.promoter_pledge_low_holding_fail_pct}%", ">", "No", "Tighter pledge ceiling when promoter holding < 35%"],
+        [2, "Promoter_Pledge_Total_Shares", f"{config.phase1.promoter_pledge_total_shares_fail_pct}%", ">", "No", "Pledged shares as % of total shares triggering FAIL"],
+        [3, "RPT_Sales_Purchases", f"{config.phase1.rpt_sales_purchases_fail_pct}%", ">", "No", "RPT sales + purchases as % of revenue"],
+        [4, "Contingent_Liabilities", f"{config.phase1.contingent_liabilities_net_worth_fail_pct}%", ">", "Yes", "Total contingent liabilities as % of net worth"],
+        [4, "Litigation_Claims", f"{config.phase1.litigation_claims_net_worth_fail_pct}%", ">", "No", "Tax & litigation claims as % of net worth"],
+        [5, "CFO_PAT_Ratio", f"{config.phase1.cfo_pat_ratio_fail_floor:.2f}", "<", "No", "5-year cumulative CFO / PAT conversion floor"],
+        [6, "Legal_Fee_Surge", f"{config.phase1.legal_fee_surge_fail_pct}%", ">", "No", "YoY legal fee surge triggering FAIL if unexplained"],
+        [6, "Legal_Audit_Fee_Multiplier", f"{config.phase1.legal_to_audit_fee_multiplier:.1f}x", ">", "No", "Ratio of legal fees to audit fees triggering FAIL"],
+    ]
+    for r in rows4:
+        ws4.append(r)
+    for col in range(1, len(headers4) + 1):
+        cell = ws4.cell(row=1, column=col)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # ----------------------------------------------------
+    # Sheet 5: Phase2_Matrix (Compatibility Alias)
+    # ----------------------------------------------------
+    ws5: Any = wb.create_sheet(title="Phase2_Matrix")
+    ws5.views.sheetView[0].showGridLines = True
+    ws5.append(headers2)
+    for r in rows2:
+        ws5.append(r)
+    for col in range(1, len(headers2) + 1):
+        cell = ws5.cell(row=1, column=col)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # ----------------------------------------------------
+    # Sheet 6: Sector_Mapping (Compatibility Alias)
+    # ----------------------------------------------------
+    ws6: Any = wb.create_sheet(title="Sector_Mapping")
+    ws6.views.sheetView[0].showGridLines = True
+    ws6.append(headers3)
+    for item in config.sector_mappings:
+        ws6.append([item.keyword, item.sector.value, item.notes or ""])
+    for col in range(1, len(headers3) + 1):
+        cell = ws6.cell(row=1, column=col)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Auto-fit columns
+    for ws in [ws1, ws2, ws3, ws4, ws5, ws6]:
         for col in ws.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
             col_letter = get_column_letter(col[0].column)
@@ -207,12 +262,28 @@ def generate_default_rules_workbook() -> bytes:
     return buf.getvalue()
 
 
+def _find_sheet(wb: openpyxl.Workbook, candidates: List[str]) -> Optional[Any]:
+    """Finds a worksheet matching any of the candidate names (case-insensitive)."""
+    for c in candidates:
+        if c in wb.sheetnames:
+            return wb[c]
+    for name in wb.sheetnames:
+        for c in candidates:
+            if name.strip().lower() == c.strip().lower():
+                return wb[name]
+    return None
+
+
 def parse_rules_config_workbook(
     file_bytes_or_stream: Union[bytes, io.BytesIO, str]
 ) -> RulesConfiguration:
     """
-    Parses an uploaded `Rules_Config.xlsx` workbook into a strongly typed RulesConfiguration.
-    Strictly handles all 3 sheets per Docs/rule-engine-implementation.md §1.1.
+    Parses an uploaded rules configuration workbook into a strongly typed RulesConfiguration.
+    Supports both official baseline schema (Docs/Rules/baseline-engine-implementation.md §1)
+    and previous generation schemas for full backwards compatibility:
+      - Sheet 1: `Master_Rule_Definitions` or `Phase1_Thresholds`
+      - Sheet 2: `Sector_Boundary_Matrix` or `Phase2_Matrix`
+      - Sheet 3: `Company_Sector_Map` or `Sector_Mapping`
     """
     if isinstance(file_bytes_or_stream, bytes):
         stream = io.BytesIO(file_bytes_or_stream)
@@ -223,41 +294,7 @@ def parse_rules_config_workbook(
 
     wb = openpyxl.load_workbook(stream, data_only=True)
 
-    # Verify sheet presence
-    required_sheets = ["Phase1_Thresholds", "Phase2_Matrix", "Sector_Mapping"]
-    for s in required_sheets:
-        if s not in wb.sheetnames:
-            raise ValueError(f"Invalid Rules_Config.xlsx: Missing required sheet '{s}'")
-
-    # 1. Parse Sheet 1: Phase1_Thresholds
-    ws1 = wb["Phase1_Thresholds"]
-    p1_dict: Dict[str, float] = {}
-
-    for row in ws1.iter_rows(min_row=2, values_only=True):
-        if not row or not row[1]:
-            continue
-        metric_name = str(row[1]).strip()
-        val = _clean_num(row[2])
-        if val is not None:
-            p1_dict[metric_name.lower()] = val
-
-    # Build Phase1RuleConfig with fallback defaults if metric omitted
-    p1_cfg = Phase1RuleConfig(
-        promoter_pledge_fail_pct=p1_dict.get("promoter_pledge", 10.0),
-        promoter_pledge_low_holding_floor_pct=p1_dict.get("promoter_pledge_low_holding_floor", 35.0),
-        promoter_pledge_low_holding_fail_pct=p1_dict.get("promoter_pledge_low_holding_fail", 5.0),
-        promoter_pledge_total_shares_fail_pct=p1_dict.get("promoter_pledge_total_shares", 5.0),
-        rpt_sales_purchases_fail_pct=p1_dict.get("rpt_sales_purchases", 10.0),
-        contingent_liabilities_net_worth_fail_pct=p1_dict.get("contingent_liabilities", 15.0),
-        litigation_claims_net_worth_fail_pct=p1_dict.get("litigation_claims", 10.0),
-        cfo_pat_ratio_fail_floor=p1_dict.get("cfo_pat_ratio", 0.80),
-        legal_fee_surge_fail_pct=p1_dict.get("legal_fee_surge", 100.0),
-        legal_to_audit_fee_multiplier=p1_dict.get("legal_audit_fee_multiplier", 3.0),
-    )
-
-    # 2. Parse Sheet 2: Phase2_Matrix
-    ws2 = wb["Phase2_Matrix"]
-    matrix_raw: Dict[str, Dict[str, Dict[str, float]]] = {}
+    default_cfg = create_default_rules_configuration()
 
     def _normalize_sector(sec_str: str) -> Optional[Phase2Sector]:
         norm = sec_str.strip().upper().replace(" ", "_").replace("-", "_")
@@ -274,13 +311,151 @@ def parse_rules_config_workbook(
             return Phase2Sector.STANDARD
         return None
 
+    # ----------------------------------------------------
+    # 1. Parse Sheet 1: Master_Rule_Definitions / Phase1_Thresholds
+    # ----------------------------------------------------
+    ws1 = _find_sheet(wb, ["Master_Rule_Definitions", "Phase1_Thresholds"])
+    if ws1 is None:
+        raise ValueError("Invalid Rules Workbook: Missing sheet 'Master_Rule_Definitions' (or 'Phase1_Thresholds')")
+
+    p1_cfg = Phase1RuleConfig()
+    p2_rules_cfg = Phase2RuleConfig()
+    master_rules_list: List[MasterRuleDefinition] = []
+
+    # Detect header structure of Sheet 1
+    header_row = [str(cell.value or '').strip() for cell in ws1[1]]
+    is_master_schema = any("Check Name" in h or "Logic Type" in h for h in header_row)
+
+    if is_master_schema:
+        # Schema: Phase | Check # | Check Name | Input Metric | Logic Type | Default Op | Default Fail Value | Sector-Aware? | Description
+        for row in ws1.iter_rows(min_row=2, values_only=True):
+            if not row or row[0] is None or row[1] is None:
+                continue
+            try:
+                phase_num = int(row[0])
+                chk_num = int(row[1])
+            except (ValueError, TypeError):
+                continue
+
+            chk_name = str(row[2] or f"Check {chk_num}").strip()
+            metric_name = str(row[3] or "").strip()
+            logic_type = str(row[4] or "Numeric").strip()
+            default_op = str(row[5] or ">").strip()
+            fail_val_str = str(row[6] or "").strip()
+            sector_aware_str = str(row[7] or "No").strip().lower()
+            sector_aware = sector_aware_str in ["yes", "true", "1"]
+            desc = str(row[8]).strip() if len(row) > 8 and row[8] else None
+
+            val_float = _clean_num(fail_val_str)
+
+            # Map to Phase 1 thresholds
+            if chk_num == 2 and val_float is not None:
+                p1_cfg.promoter_pledge_fail_pct = val_float
+            elif chk_num == 3 and val_float is not None:
+                p1_cfg.rpt_sales_purchases_fail_pct = val_float
+            elif chk_num == 4 and val_float is not None:
+                p1_cfg.contingent_liabilities_net_worth_fail_pct = val_float
+            elif chk_num == 5 and val_float is not None:
+                # CFO/PAT ratio (e.g. 0.80)
+                p1_cfg.cfo_pat_ratio_fail_floor = val_float if val_float <= 1.0 else val_float / 100.0
+            elif chk_num == 6 and val_float is not None:
+                # Exec Stability
+                pass
+            # Map to Phase 2 non-sector thresholds
+            elif chk_num == 8 and val_float is not None:
+                p2_rules_cfg.ebitda_margin_var_fail_pct = val_float
+            elif chk_num == 13 and fail_val_str:
+                p2_rules_cfg.credit_rating_fail_floor = fail_val_str.replace('"', '').replace("'", "")
+            elif chk_num == 14 and val_float is not None:
+                p2_rules_cfg.loans_advances_net_worth_fail_pct = val_float
+            elif chk_num == 15 and val_float is not None:
+                p2_rules_cfg.guarantees_net_worth_fail_pct = val_float
+            elif chk_num == 17 and val_float is not None:
+                p2_rules_cfg.moat_evidence_count_fail_floor = int(val_float)
+
+            master_rules_list.append(MasterRuleDefinition(
+                phase=phase_num,
+                check_num=chk_num,
+                check_name=chk_name,
+                input_metric=metric_name,
+                logic_type=logic_type,
+                default_op=default_op,
+                default_fail_value=fail_val_str,
+                sector_aware=sector_aware,
+                description=desc,
+            ))
+    else:
+        # Legacy key-value Phase1_Thresholds schema
+        p1_dict: Dict[str, float] = {}
+        for row in ws1.iter_rows(min_row=2, values_only=True):
+            if not row or not row[1]:
+                continue
+            m_name = str(row[1]).strip().lower()
+            val = _clean_num(row[2])
+            if val is not None:
+                p1_dict[m_name] = val
+
+        p1_cfg = Phase1RuleConfig(
+            promoter_pledge_fail_pct=p1_dict.get("promoter_pledge", 10.0),
+            promoter_pledge_low_holding_floor_pct=p1_dict.get("promoter_pledge_low_holding_floor", 35.0),
+            promoter_pledge_low_holding_fail_pct=p1_dict.get("promoter_pledge_low_holding_fail", 5.0),
+            promoter_pledge_total_shares_fail_pct=p1_dict.get("promoter_pledge_total_shares", 5.0),
+            rpt_sales_purchases_fail_pct=p1_dict.get("rpt_sales_purchases", 10.0),
+            contingent_liabilities_net_worth_fail_pct=p1_dict.get("contingent_liabilities", 15.0),
+            litigation_claims_net_worth_fail_pct=p1_dict.get("litigation_claims", 10.0),
+            cfo_pat_ratio_fail_floor=p1_dict.get("cfo_pat_ratio", 0.80),
+            legal_fee_surge_fail_pct=p1_dict.get("legal_fee_surge", 100.0),
+            legal_to_audit_fee_multiplier=p1_dict.get("legal_audit_fee_multiplier", 3.0),
+        )
+    # If Phase1_Thresholds sheet is also present, allow non-default mutations to propagate
+    ws_p1_legacy = _find_sheet(wb, ["Phase1_Thresholds"])
+    if ws_p1_legacy is not None and ws_p1_legacy != ws1:
+        for row in ws_p1_legacy.iter_rows(min_row=2, values_only=True):
+            if not row or not row[1]:
+                continue
+            m_name = str(row[1]).strip().lower()
+            val = _clean_num(row[2])
+            if val is not None:
+                if m_name == "promoter_pledge" and val != 10.0:
+                    p1_cfg.promoter_pledge_fail_pct = val
+                elif m_name == "promoter_pledge_low_holding_floor" and val != 35.0:
+                    p1_cfg.promoter_pledge_low_holding_floor_pct = val
+                elif m_name == "promoter_pledge_low_holding_fail" and val != 5.0:
+                    p1_cfg.promoter_pledge_low_holding_fail_pct = val
+                elif m_name == "promoter_pledge_total_shares" and val != 5.0:
+                    p1_cfg.promoter_pledge_total_shares_fail_pct = val
+                elif m_name == "rpt_sales_purchases" and val != 10.0:
+                    p1_cfg.rpt_sales_purchases_fail_pct = val
+                elif m_name == "contingent_liabilities" and val != 15.0:
+                    p1_cfg.contingent_liabilities_net_worth_fail_pct = val
+                elif m_name == "litigation_claims" and val != 10.0:
+                    p1_cfg.litigation_claims_net_worth_fail_pct = val
+                elif m_name == "cfo_pat_ratio" and val != 0.80:
+                    p1_cfg.cfo_pat_ratio_fail_floor = val if val <= 1.0 else val / 100.0
+                elif m_name == "legal_fee_surge" and val != 100.0:
+                    p1_cfg.legal_fee_surge_fail_pct = val
+                elif m_name == "legal_audit_fee_multiplier" and val != 3.0:
+                    p1_cfg.legal_to_audit_fee_multiplier = val
+
+    if not master_rules_list:
+        master_rules_list = default_cfg.master_rules
+
+    # ----------------------------------------------------
+    # 2. Parse Sheet 2: Sector_Boundary_Matrix / Phase2_Matrix
+    # ----------------------------------------------------
+    ws2 = _find_sheet(wb, ["Sector_Boundary_Matrix", "Phase2_Matrix"])
+    if ws2 is None:
+        raise ValueError("Invalid Rules Workbook: Missing sheet 'Sector_Boundary_Matrix' (or 'Phase2_Matrix')")
+
+    matrix_raw: Dict[str, Dict[str, Dict[str, float]]] = {}
+
     for row in ws2.iter_rows(min_row=2, values_only=True):
         if not row or not row[0] or not row[1]:
             continue
         sec_enum = _normalize_sector(str(row[0]))
         if not sec_enum:
             continue
-        metric = str(row[1]).strip().lower()
+        metric = str(row[1]).strip().lower().replace(" ", "_")
         pass_val = _clean_num(row[2])
         fail_val = _clean_num(row[3])
 
@@ -292,8 +467,27 @@ def parse_rules_config_workbook(
             "fail": fail_val if fail_val is not None else 0.0,
         }
 
-    # Populate Phase2 Matrix with defaults as fallback for any missing metric
-    default_cfg = create_default_rules_configuration()
+    # If Phase2_Matrix sheet is also present, allow it to override Phase 2 metrics
+    ws_p2_legacy = _find_sheet(wb, ["Phase2_Matrix"])
+    if ws_p2_legacy is not None and ws_p2_legacy != ws2:
+        for row in ws_p2_legacy.iter_rows(min_row=2, values_only=True):
+            if not row or not row[0] or not row[1]:
+                continue
+            sec_enum = _normalize_sector(str(row[0]))
+            if not sec_enum:
+                continue
+            metric = str(row[1]).strip().lower().replace(" ", "_")
+            pass_val = _clean_num(row[2])
+            fail_val = _clean_num(row[3])
+
+            sec_key = sec_enum.value
+            if sec_key not in matrix_raw:
+                matrix_raw[sec_key] = {}
+            matrix_raw[sec_key][metric] = {
+                "pass": pass_val if pass_val is not None else 0.0,
+                "fail": fail_val if fail_val is not None else 0.0,
+            }
+
     matrix_final: Dict[str, SectorThresholdConfig] = {}
 
     for sec in Phase2Sector:
@@ -302,11 +496,11 @@ def parse_rules_config_workbook(
         sec_data = matrix_raw.get(sec_key, {})
 
         roce_d = sec_data.get("roce", {})
-        debt_d = sec_data.get("netdebt_ebitda", {})
+        debt_d = sec_data.get("netdebt_ebitda", {}) or sec_data.get("net_debt_ebitda", {})
         int_d = sec_data.get("interest_coverage", {})
-        st_d = sec_data.get("max_st_debt_pct", {})
-        ccc_d = sec_data.get("ccc_deterioration_days", {})
-        rec_d = sec_data.get("max_receivable_days", {})
+        st_d = sec_data.get("max_st_debt_pct", {}) or sec_data.get("st_debt", {})
+        ccc_d = sec_data.get("ccc_det", {}) or sec_data.get("ccc_deterioration_days", {}) or sec_data.get("ccc_deterioration", {})
+        rec_d = sec_data.get("receivable_days", {}) or sec_data.get("max_receivable_days", {})
 
         matrix_final[sec_key] = SectorThresholdConfig(
             sector=sec,
@@ -321,8 +515,13 @@ def parse_rules_config_workbook(
             max_receivable_days_critical_cap=rec_d.get("fail", def_sec.max_receivable_days_critical_cap if def_sec else 90.0),
         )
 
-    # 3. Parse Sheet 3: Sector_Mapping
-    ws3 = wb["Sector_Mapping"]
+    # ----------------------------------------------------
+    # 3. Parse Sheet 3: Company_Sector_Map / Sector_Mapping
+    # ----------------------------------------------------
+    ws3 = _find_sheet(wb, ["Company_Sector_Map", "Sector_Mapping"])
+    if ws3 is None:
+        raise ValueError("Invalid Rules Workbook: Missing sheet 'Company_Sector_Map' (or 'Sector_Mapping')")
+
     mappings: List[SectorKeywordItem] = []
 
     for row in ws3.iter_rows(min_row=2, values_only=True):
@@ -340,8 +539,10 @@ def parse_rules_config_workbook(
     return RulesConfiguration(
         version="1.0.0",
         source="EXCEL_UPLOAD",
-        description="User Custom Rules Configuration loaded via Excel upload",
+        description="Master Rules Configuration loaded via Excel upload",
+        master_rules=master_rules_list,
         phase1=p1_cfg,
+        phase2_rules=p2_rules_cfg,
         phase2_matrix=matrix_final,
         sector_mappings=mappings,
     )

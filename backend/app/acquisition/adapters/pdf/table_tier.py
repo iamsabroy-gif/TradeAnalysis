@@ -314,3 +314,222 @@ def extract_note_fields_from_pdf(
                 break
 
     return [apply_unit_normalization(f, unit_map) for f in fields]
+
+
+# ---------------------------------------------------------------------------
+# Line tier
+#
+# Indian annual report notes are typeset without ruling lines, so pdfplumber's
+# table detection returns either nothing or a single mangled column for them.
+# The values are however perfectly legible in the extracted text: a period
+# header row, then one label per line with its columns as trailing numbers.
+# This tier reads that shape directly and backs up the table tier above.
+# ---------------------------------------------------------------------------
+
+_YEAR_TOKEN = re.compile(r"(?<!\d)20(\d{2})(?!\d)")
+_PERIOD_HINT = re.compile(
+    r"as at|year ended|period ended|march|january|february|april|may|june|july|"
+    r"august|september|october|november|december",
+    re.IGNORECASE,
+)
+_NEW_NOTE = re.compile(r"^\s*(?:note\s+)?\d+(?:\.\d+)+[A-Za-z]?[.\s]")
+_FOOTNOTE = re.compile(r"^\s*[*#†‡]")
+
+# Ordered label patterns per field: the first pattern that yields numbers wins,
+# so a note total is preferred over one of its components.
+_LINE_LABELS: Dict[str, List[str]] = {
+    "audit_fees": [
+        r"auditor'?s'? remuneration",
+        r"auditor remuneration",
+        r"remuneration to auditors?",
+        r"payment to auditors?",
+        r"statutory audit",
+    ],
+    "legal_fees": [
+        r"legal (?:and|&) professional",
+        r"legal charges",
+        r"legal fees",
+    ],
+}
+
+
+def _period_columns(lines: List[str], anchor_idx: int) -> List[str]:
+    """
+    Reads the column period labels ('March 31, 2026  March 31, 2025') from the
+    header row governing `anchor_idx`. Returns ordered FY labels, e.g. FY26, FY25.
+    """
+    best: List[str] = []
+    for idx, line in enumerate(lines):
+        years = _YEAR_TOKEN.findall(line)
+        if len(years) < 2 or not _PERIOD_HINT.search(line):
+            continue
+        labels = [f"FY{y}" for y in years]
+        if idx <= anchor_idx or not best:
+            best = labels
+    return best
+
+
+def _is_period_header(line: str) -> bool:
+    return bool(_YEAR_TOKEN.search(line) and _PERIOD_HINT.search(line))
+
+
+def _trailing_numbers(line: str, max_count: int) -> List[float]:
+    """
+    Reads the numeric columns off the end of a note line, stopping at the first
+    token that is not a number so prose and footnote markers are excluded.
+    A bare dash is the reports' notation for nil.
+    """
+    if max_count <= 0 or _is_period_header(line):
+        return []
+    values: List[float] = []
+    for token in reversed(line.split()):
+        if token in {"-", "--", "—", "–", "−"}:
+            values.append(0.0)
+        else:
+            parsed = parse_clean_number(token)
+            if parsed is None:
+                break
+            values.append(parsed)
+        if len(values) >= max_count:
+            break
+    return list(reversed(values))
+
+
+def _label_of(line: str, values: List[float]) -> str:
+    tokens = line.split()
+    label = " ".join(tokens[: len(tokens) - len(values)]).strip()
+    return label
+
+
+def _note_block(lines: List[str], anchor_idx: int, max_lines: int = 40) -> List[str]:
+    """Returns the lines belonging to the note starting at `anchor_idx`."""
+    block = []
+    for line in lines[anchor_idx + 1 : anchor_idx + 1 + max_lines]:
+        if _NEW_NOTE.match(line) or _FOOTNOTE.match(line):
+            break
+        block.append(line)
+    return block
+
+
+def _make_field(
+    field_name: str,
+    value: float,
+    period: str,
+    confidence: Confidence,
+    snippet: str,
+    page_no: int,
+    source_filename: str,
+    basis: ReportingBasis,
+    document_id: Optional[str],
+) -> ExtractedField:
+    return ExtractedField(
+        field_name=field_name,
+        value=value,
+        confidence=confidence,
+        extraction_method=ExtractionMethod.TABLE_PARSE,
+        source=source_filename,
+        period=period,
+        basis=basis,
+        page=page_no,
+        raw_snippet=snippet,
+        document_id=document_id,
+    )
+
+
+def extract_line_fields_from_page(
+    page_text: str,
+    page_no: int,
+    wanted: Set[str],
+    source_filename: str,
+    doc_fy: Optional[str],
+    basis: ReportingBasis,
+    document_id: Optional[str] = None,
+) -> List[ExtractedField]:
+    """
+    Extracts the requested note fields from one page of borderless note text.
+    """
+    text = normalize_quotes(page_text or "")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return []
+
+    fields: List[ExtractedField] = []
+    lower_lines = [ln.lower() for ln in lines]
+
+    def periods_for(idx: int) -> List[str]:
+        cols = _period_columns(lines, idx)
+        return cols or [doc_fy or "FY24"]
+
+    # 1. Single-label notes: audit fees and legal & professional charges.
+    for field_name in ("audit_fees", "legal_fees"):
+        if field_name not in wanted:
+            continue
+        for pattern in _LINE_LABELS[field_name]:
+            hit = next((i for i, ln in enumerate(lower_lines) if re.search(pattern, ln)), None)
+            if hit is None:
+                continue
+            cols = periods_for(hit)
+            values = _trailing_numbers(lines[hit], len(cols))
+            if not values or not _label_of(lines[hit], values):
+                continue
+            confidence = Confidence.HIGH if len(cols) >= 2 else Confidence.MEDIUM
+            fields.append(
+                _make_field(
+                    field_name, values[0], cols[0], confidence,
+                    f"{_label_of(lines[hit], values)}: {values[0]}",
+                    page_no, source_filename, basis, document_id,
+                )
+            )
+            if field_name == "legal_fees" and len(values) >= 2 and len(cols) >= 2:
+                fields.append(
+                    _make_field(
+                        "legal_fees_prior_year", values[1], cols[1], confidence,
+                        f"{_label_of(lines[hit], values)} (prior year): {values[1]}",
+                        page_no, source_filename, basis, document_id,
+                    )
+                )
+            break
+
+    # 2. Contingent liabilities: use the note's total row, or sum its claim rows
+    #    when the note only lists components (the common case).
+    if "contingent_liabilities" in wanted:
+        anchor = next(
+            (i for i, ln in enumerate(lower_lines) if "contingent liabilit" in ln),
+            None,
+        )
+        if anchor is not None:
+            cols = periods_for(anchor)
+            rows: List[Tuple[str, List[float]]] = []
+            total_row: Optional[Tuple[str, List[float]]] = None
+            for line in _note_block(lines, anchor):
+                values = _trailing_numbers(line, len(cols))
+                if len(values) != len(cols):
+                    continue
+                label = _label_of(line, values)
+                if not label or not re.search(r"[A-Za-z]", label):
+                    continue
+                if re.match(r"^\s*total\b", label, re.IGNORECASE):
+                    total_row = (label, values)
+                    break
+                rows.append((label, values))
+
+            if total_row:
+                label, values = total_row
+                fields.append(
+                    _make_field(
+                        "contingent_liabilities", values[0], cols[0], Confidence.HIGH,
+                        f"{label}: {values[0]}", page_no, source_filename, basis, document_id,
+                    )
+                )
+            elif rows:
+                total = sum(v[0] for _, v in rows)
+                detail = "; ".join(f"{label}: {v[0]}" for label, v in rows)
+                fields.append(
+                    _make_field(
+                        "contingent_liabilities", total, cols[0], Confidence.MEDIUM,
+                        f"Sum of {len(rows)} claim lines = {total} ({detail})"[:300],
+                        page_no, source_filename, basis, document_id,
+                    )
+                )
+
+    return fields

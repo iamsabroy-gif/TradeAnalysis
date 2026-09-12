@@ -349,7 +349,9 @@ export default function App() {
             style={{
               background: currentPhase === 'phase1' 
                 ? 'linear-gradient(135deg, #6366f1, #3b82f6)' 
-                : 'linear-gradient(135deg, #10b981, #06b6d4)',
+                : currentPhase === 'phase2'
+                ? 'linear-gradient(135deg, #10b981, #06b6d4)'
+                : 'linear-gradient(135deg, #8b5cf6, #ec4899)',
               padding: '10px',
               borderRadius: '12px',
               display: 'flex',
@@ -357,53 +359,31 @@ export default function App() {
           >
             {currentPhase === 'phase1' ? (
               <ShieldCheck size={28} color="#fff" />
-            ) : (
+            ) : currentPhase === 'phase2' ? (
               <TrendingUp size={28} color="#fff" />
+            ) : (
+              <Sliders size={28} color="#fff" />
             )}
           </div>
           <div>
             <h1 style={{ fontSize: '24px', margin: 0 }}>
-              {currentPhase === 'phase1' ? 'Phase 1 Gatekeeper' : 'Phase 2 Quality Engine'}
+              {currentPhase === 'phase1'
+                ? 'Phase 1 Gatekeeper'
+                : currentPhase === 'phase2'
+                ? 'Phase 2 Quality Engine'
+                : 'Rule Engine Configuration'}
             </h1>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
               {currentPhase === 'phase1'
                 ? 'Honesty, Integrity & Forensic Safety Engine (Checks 1–6)'
-                : 'Business Quality, Moat & Capital Allocation Engine (Checks 7–18)'}
+                : currentPhase === 'phase2'
+                ? 'Business Quality, Moat & Capital Allocation Engine (Checks 7–18)'
+                : 'Decoupled Triple-Input Model: [Stock Data] + [Rules Config] + [Sector Mapping]'}
             </p>
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <button
-            id="open-rules-config-btn"
-            className="btn btn-secondary btn-sm"
-            onClick={() => setRulesModalOpen(true)}
-            title="Configure dynamic rules engine thresholds, boundary matrices, and sector mappings"
-            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-          >
-            <Sliders size={14} /> Rules Config
-            <span
-              style={{
-                fontSize: '10.5px',
-                padding: '2px 7px',
-                borderRadius: '8px',
-                fontWeight: 600,
-                backgroundColor:
-                  rulesConfigInfo.source === 'DEFAULT'
-                    ? 'rgba(59, 130, 246, 0.15)'
-                    : 'rgba(16, 185, 129, 0.2)',
-                color: rulesConfigInfo.source === 'DEFAULT' ? '#60a5fa' : '#34d399',
-                border: `1px solid ${
-                  rulesConfigInfo.source === 'DEFAULT'
-                    ? 'rgba(59, 130, 246, 0.3)'
-                    : 'rgba(16, 185, 129, 0.4)'
-                }`,
-              }}
-            >
-              {rulesConfigInfo.source === 'DEFAULT' ? 'Default' : 'Custom'}
-            </span>
-          </button>
-
           <a
             id="download-template-link"
             href="/api/templates/workbook.xlsx"
@@ -443,11 +423,45 @@ export default function App() {
           >
             <TrendingUp size={18} /> Phase 2: Business Quality (Checks 7–18)
           </button>
+          <button
+            id="tab-switch-rules"
+            className={`tab-btn ${currentPhase === 'rules' ? 'active' : ''}`}
+            style={{ fontSize: '14px', padding: '10px 22px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}
+            onClick={() => setCurrentPhase('rules')}
+          >
+            <Sliders size={18} /> Rules Configuration
+            <span
+              style={{
+                fontSize: '10px',
+                padding: '2px 6px',
+                borderRadius: '8px',
+                fontWeight: 600,
+                backgroundColor:
+                  rulesConfigInfo.source === 'DEFAULT'
+                    ? 'rgba(59, 130, 246, 0.15)'
+                    : 'rgba(16, 185, 129, 0.2)',
+                color: rulesConfigInfo.source === 'DEFAULT' ? '#60a5fa' : '#34d399',
+                border: `1px solid ${
+                  rulesConfigInfo.source === 'DEFAULT'
+                    ? 'rgba(59, 130, 246, 0.3)'
+                    : 'rgba(16, 185, 129, 0.4)'
+                }`,
+              }}
+            >
+              {rulesConfigInfo.source === 'DEFAULT' ? 'Default' : 'Custom'}
+            </span>
+          </button>
         </div>
       </div>
 
       {/* Conditional Phase View */}
-      {currentPhase === 'phase2' ? (
+      {currentPhase === 'rules' ? (
+        <RulesConfigModal
+          isOpen={true}
+          embedded={true}
+          onConfigChanged={refreshRulesInfo}
+        />
+      ) : currentPhase === 'phase2' ? (
         <Phase2View
           initialTicker={formData.ticker}
           initialPhase1Id={evaluation?.result?.verdict === 'CLEARED TO PHASE 2' ? evaluation.result.result_id : null}

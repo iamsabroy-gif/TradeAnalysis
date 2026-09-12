@@ -135,8 +135,9 @@ def apply_unit_normalization(
             raw_snippet=f"{f.raw_snippet} [unit not declared on or before p.{f.page} — value NOT normalized]",
         )
 
+    unit_label = (unit or "").lower()
     return dataclass_replace(
         f,
         value=normalized,
-        raw_snippet=f"{f.raw_snippet} [{f.value} {unit.lower()} -> {normalized} lakh]",
+        raw_snippet=f"{f.raw_snippet} [{f.value} {unit_label} -> {normalized} lakh]",
     )

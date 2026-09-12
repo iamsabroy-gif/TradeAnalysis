@@ -55,12 +55,15 @@ class SupabaseResultStore:
             .limit(1)
             .execute()
         )
-        rows = resp.data or []
-        if not rows:
+        data: Any = resp.data
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return None
+        first_row = data[0]
+        if not isinstance(first_row, dict):
             return None
         return {
-            "result": rows[0]["result"],
-            "company_input": rows[0].get("company_input"),
+            "result": first_row.get("result"),
+            "company_input": first_row.get("company_input"),
         }
 
     def latest_result_id_for_ticker(self, ticker: str) -> Optional[str]:
@@ -72,5 +75,11 @@ class SupabaseResultStore:
             .limit(1)
             .execute()
         )
-        rows = resp.data or []
-        return rows[0]["result_id"] if rows else None
+        data: Any = resp.data
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return None
+        first_row = data[0]
+        if isinstance(first_row, dict):
+            val = first_row.get("result_id")
+            return str(val) if val is not None else None
+        return None

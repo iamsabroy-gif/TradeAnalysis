@@ -370,7 +370,7 @@ def parse_screener_html(
 
     # 3. Documents section (Annual Reports links captured as DocumentRef, §5.4)
     for a in soup.find_all("a", href=True):
-        href = a["href"]
+        href = str(a.get("href") or "")
         text = a.get_text(strip=True)
         if ".pdf" in href.lower() or "annual report" in text.lower():
             # Try matching year

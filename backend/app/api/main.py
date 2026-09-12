@@ -794,7 +794,8 @@ def get_phase2_report(result_id: str, format: str = "investor"):
 @app.get("/api/rules/config")
 def get_rules_config():
     """
-    Returns the currently active dynamic rules configuration summary.
+    Returns the currently active dynamic rules configuration summary,
+    including the full 18-check Master Rule Definitions and sector matrices.
     """
     cfg = get_active_rules_config()
     return {
@@ -802,22 +803,40 @@ def get_rules_config():
         "source": cfg.source,
         "description": cfg.description,
         "updated_at": cfg.updated_at,
+        "master_rules": [m.model_dump() for m in cfg.master_rules],
         "phase1": cfg.phase1.model_dump(),
+        "phase2_rules": cfg.phase2_rules.model_dump(),
         "phase2_matrix": {k: v.model_dump() for k, v in cfg.phase2_matrix.items()},
         "sector_mappings": [m.model_dump() for m in cfg.sector_mappings],
+    }
+
+
+@app.get("/api/rules/master-definitions")
+def get_master_rule_definitions():
+    """
+    Returns the complete list of all 18 checks defined in the Master Rule Definitions schema
+    (Docs/Rules/baseline-engine-implementation.md §1.1).
+    """
+    cfg = get_active_rules_config()
+    return {
+        "count": len(cfg.master_rules),
+        "source": cfg.source,
+        "version": cfg.version,
+        "master_rules": [m.model_dump() for m in cfg.master_rules],
     }
 
 
 @app.get("/api/rules/config/download")
 def download_rules_config_workbook():
     """
-    Downloads the official 3-sheet Rules_Config.xlsx workbook.
+    Downloads the official 3-sheet Master_Rule_Definitions.xlsx workbook template
+    (Docs/Rules/baseline-engine-implementation.md §1).
     """
     excel_bytes = generate_default_rules_workbook()
     return Response(
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="Rules_Config.xlsx"'},
+        headers={"Content-Disposition": 'attachment; filename="Master_Rule_Definitions.xlsx"'},
     )
 
 
@@ -895,7 +914,12 @@ def evaluate_full_gatekeeper(req: FullEvaluationRequest):
 
     # 1. Run Phase 1
     p1_result = run_phase1(req.phase1_input, rule_config=active_cfg.phase1)
-    store.save_result(p1_result, req.phase1_input)
+    store.save_result(
+        p1_result.result_id,
+        req.phase1_input.ticker,
+        p1_result.model_dump(mode="json"),
+        req.phase1_input.model_dump(mode="json"),
+    )
 
     # 2. If Phase 1 rejects, stop and return Phase 1 rejection
     if p1_result.verdict != Verdict.CLEARED_TO_PHASE_2:

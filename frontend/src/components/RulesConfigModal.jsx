@@ -16,10 +16,11 @@ import {
   Info
 } from 'lucide-react';
 
-export default function RulesConfigModal({ isOpen, onClose, onConfigChanged }) {
+export default function RulesConfigModal({ isOpen, onClose, onConfigChanged, embedded = false }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('phase1');
+  const [activeTab, setActiveTab] = useState('master'); // 'master' | 'phase2' | 'mappings' | 'phase1'
+  const [masterPhaseFilter, setMasterPhaseFilter] = useState('all'); // 'all' | '1' | '2'
   const [uploading, setUploading] = useState(false);
   const [notification, setNotification] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -71,7 +72,7 @@ export default function RulesConfigModal({ isOpen, onClose, onConfigChanged }) {
       if (res.ok && data.status === 'SUCCESS') {
         setNotification({
           type: 'success',
-          message: `Successfully loaded custom rules from ${data.file_name}! (Phase 1: ${data.loaded_counts?.phase1_rules_count || 10} thresholds, Phase 2: ${data.loaded_counts?.phase2_sectors_count || 4} sectors, Mappings: ${data.loaded_counts?.sector_keywords_count || 0} keywords)`,
+          message: `Successfully loaded custom rules from ${data.file_name || 'workbook'}! (Checks: ${data.loaded_counts?.phase1_rules_count || 18}, Sectors: ${data.loaded_counts?.phase2_sectors_count || 4}, Mappings: ${data.loaded_counts?.sector_keywords_count || 0})`,
         });
         await fetchConfig();
         if (onConfigChanged) onConfigChanged();
@@ -141,6 +142,12 @@ export default function RulesConfigModal({ isOpen, onClose, onConfigChanged }) {
 
   if (!isOpen) return null;
 
+  const filteredMasterRules = (config?.master_rules || []).filter((r) => {
+    if (masterPhaseFilter === '1') return r.phase === 1;
+    if (masterPhaseFilter === '2') return r.phase === 2;
+    return true;
+  });
+
   const filteredMappings = config?.sector_mappings?.filter((m) => {
     const q = searchTerm.toLowerCase();
     return (
@@ -150,308 +157,425 @@ export default function RulesConfigModal({ isOpen, onClose, onConfigChanged }) {
     );
   }) || [];
 
-  return (
+  const modalContent = (
     <div
+      className="glass-panel"
       style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: 'rgba(2, 6, 23, 0.85)',
-        backdropFilter: 'blur(8px)',
-        zIndex: 1000,
+        width: '100%',
+        maxWidth: embedded ? '100%' : '1060px',
+        maxHeight: embedded ? 'none' : '90vh',
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        background: '#0f172a',
+        border: '1px solid var(--border-subtle)',
+        boxShadow: embedded ? 'none' : '0 25px 50px -12px rgba(0, 0, 0, 0.75)',
+        borderRadius: '16px',
       }}
-      onClick={onClose}
+      onClick={(e) => e.stopPropagation()}
     >
+      {/* Header */}
       <div
-        className="glass-panel"
         style={{
-          width: '100%',
-          maxWidth: '1040px',
-          maxHeight: '90vh',
+          padding: '18px 24px',
+          borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          background: '#0f172a',
-          border: '1px solid var(--border-subtle)',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.75)',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          background: 'rgba(15, 23, 42, 0.95)',
+          flexWrap: 'wrap',
+          gap: '12px',
         }}
-        onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div
-          style={{
-            padding: '20px 24px',
-            borderBottom: '1px solid var(--border-subtle)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            background: 'rgba(15, 23, 42, 0.95)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #6366f1, #a855f7)',
-                padding: '10px',
-                borderRadius: '10px',
-                display: 'flex',
-              }}
-            >
-              <Sliders size={22} color="#fff" />
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>
-                  Rule Engine Configuration
-                </h3>
-                {config && (
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      padding: '3px 8px',
-                      borderRadius: '12px',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.04em',
-                      backgroundColor:
-                        config.source === 'DEFAULT'
-                          ? 'rgba(59, 130, 246, 0.15)'
-                          : 'rgba(16, 185, 129, 0.2)',
-                      color: config.source === 'DEFAULT' ? '#60a5fa' : '#34d399',
-                      border: `1px solid ${
-                        config.source === 'DEFAULT'
-                          ? 'rgba(59, 130, 246, 0.3)'
-                          : 'rgba(16, 185, 129, 0.4)'
-                      }`,
-                    }}
-                  >
-                    {config.source === 'DEFAULT' ? 'Built-in Baseline' : 'Custom Excel Config'}
-                  </span>
-                )}
-              </div>
-              <p style={{ margin: '4px 0 0', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
-                Decoupled Triple-Input Model: [Stock Data] + [Rules Config] + [Sector Mapping] → Engine → [Verdict]
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              padding: '6px',
-              borderRadius: '6px',
-            }}
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Action Toolbar */}
-        <div
-          style={{
-            padding: '14px 24px',
-            backgroundColor: 'rgba(30, 41, 59, 0.4)',
-            borderBottom: '1px solid var(--border-subtle)',
-            display: 'flex',
-            flexWrap: 'wrap',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '12px',
-          }}
-        >
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <a
-              id="download-rules-config-btn"
-              href="/api/rules/config/download"
-              download="Rules_Config.xlsx"
-              className="btn btn-secondary btn-sm"
-              title="Download editable 3-sheet Excel workbook (Phase1_Thresholds, Phase2_Matrix, Sector_Mapping)"
-            >
-              <Download size={15} /> Download Rules_Config.xlsx
-            </a>
-
-            <label
-              htmlFor="upload-rules-config-input"
-              className={`btn btn-primary btn-sm ${uploading ? 'opacity-50' : ''}`}
-              style={{ cursor: uploading ? 'wait' : 'pointer' }}
-              title="Upload modified Rules_Config.xlsx to dynamically alter engine thresholds"
-            >
-              <UploadCloud size={15} /> {uploading ? 'Parsing...' : 'Upload Custom Config'}
-              <input
-                id="upload-rules-config-input"
-                type="file"
-                accept=".xlsx"
-                style={{ display: 'none' }}
-                onChange={handleFileUpload}
-                disabled={uploading}
-              />
-            </label>
-
-            {config?.source !== 'DEFAULT' && (
-              <button
-                id="reset-rules-config-btn"
-                onClick={handleReset}
-                className="btn btn-secondary btn-sm"
-                title="Reset active configuration to baseline defaults"
-                style={{ color: 'var(--color-danger)' }}
-              >
-                <RotateCcw size={14} /> Reset Defaults
-              </button>
-            )}
-          </div>
-
-          {/* Quick Stats Pill */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            <span>Version: <strong style={{ color: 'var(--text-primary)' }}>{config?.version || '1.0.0'}</strong></span>
-            <span>•</span>
-            <span>Last Updated: <strong style={{ color: 'var(--text-primary)' }}>{config?.updated_at ? new Date(config.updated_at).toLocaleTimeString() : 'Baseline'}</strong></span>
-          </div>
-        </div>
-
-        {/* Notifications / Feedback */}
-        {notification && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div
             style={{
-              padding: '12px 24px',
-              backgroundColor:
-                notification.type === 'success'
-                  ? 'rgba(16, 185, 129, 0.15)'
-                  : 'rgba(239, 68, 68, 0.15)',
-              borderBottom: '1px solid var(--border-subtle)',
-              color: notification.type === 'success' ? '#34d399' : '#f87171',
-              fontSize: '13px',
+              background: 'linear-gradient(135deg, #6366f1, #a855f7)',
+              padding: '10px',
+              borderRadius: '10px',
               display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
             }}
           >
-            {notification.type === 'success' ? (
-              <CheckCircle2 size={16} />
-            ) : (
-              <AlertTriangle size={16} />
-            )}
-            <span>{notification.message}</span>
+            <Sliders size={22} color="#fff" />
           </div>
-        )}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>
+                Rule Engine Configuration
+              </h3>
+              {config && (
+                <span
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    padding: '3px 8px',
+                    borderRadius: '12px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    backgroundColor:
+                      config.source === 'DEFAULT'
+                        ? 'rgba(59, 130, 246, 0.15)'
+                        : 'rgba(16, 185, 129, 0.2)',
+                    color: config.source === 'DEFAULT' ? '#60a5fa' : '#34d399',
+                    border: `1px solid ${
+                      config.source === 'DEFAULT'
+                        ? 'rgba(59, 130, 246, 0.3)'
+                        : 'rgba(16, 185, 129, 0.4)'
+                    }`,
+                  }}
+                >
+                  {config.source === 'DEFAULT' ? 'Built-in Baseline' : 'Custom Excel Config'}
+                </span>
+              )}
+            </div>
+            <p style={{ margin: '4px 0 0', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+              Baseline Specification: Master Rule Definitions (All 18 Checks) • Sector Boundary Matrix • Company Sector Map
+            </p>
+          </div>
+        </div>
 
-        {/* Keyword Resolver Tester Bar */}
-        <div
-          style={{
-            padding: '12px 24px',
-            backgroundColor: 'rgba(15, 23, 42, 0.7)',
-            borderBottom: '1px solid var(--border-subtle)',
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: '12px',
-          }}
-        >
-          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-            ⚡ Keyword Resolver Test:
-          </span>
-          <form
-            onSubmit={handleTestKeyword}
-            style={{ display: 'flex', gap: '8px', flex: 1, maxWidth: '440px' }}
-          >
-            <input
-              type="text"
-              placeholder="e.g. SaaS software, Auto components, Mining, EPC..."
-              value={testKeyword}
-              onChange={(e) => setTestKeyword(e.target.value)}
-              className="input-field"
-              style={{
-                fontSize: '12.5px',
-                padding: '6px 12px',
-                background: 'rgba(30, 41, 59, 0.6)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: '8px',
-                color: '#fff',
-                width: '100%',
-              }}
-            />
+        {/* Header Action: Close Button (Modal mode only) */}
+        {!embedded && onClose && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button
-              type="submit"
-              disabled={testingKeyword || !testKeyword.trim()}
-              className="btn btn-secondary btn-sm"
-              style={{ padding: '6px 12px', fontSize: '12px' }}
-            >
-              Resolve
-            </button>
-          </form>
-
-          {testResult && (
-            <div
+              id="close-rules-x-btn"
+              onClick={onClose}
+              title="Close modal"
               style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                padding: '6px',
+                borderRadius: '6px',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px',
-                fontSize: '12px',
-                background: 'rgba(99, 102, 241, 0.15)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                padding: '4px 10px',
-                borderRadius: '8px',
-                color: '#a5b4fc',
               }}
             >
-              <span>Sector: <strong style={{ color: '#fff' }}>{testResult.resolved_sector}</strong></span>
-              <span>•</span>
-              <span style={{ fontStyle: 'italic', opacity: 0.85 }}>{testResult.reason}</span>
-            </div>
+              <X size={20} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Action Toolbar */}
+      <div
+        style={{
+          padding: '14px 24px',
+          backgroundColor: 'rgba(30, 41, 59, 0.4)',
+          borderBottom: '1px solid var(--border-subtle)',
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: '12px',
+        }}
+      >
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <a
+            id="download-rules-config-btn"
+            href="/api/rules/config/download"
+            download="Master_Rule_Definitions.xlsx"
+            className="btn btn-secondary btn-sm"
+            title="Download editable 3-sheet Excel workbook (Master_Rule_Definitions, Sector_Boundary_Matrix, Company_Sector_Map)"
+          >
+            <Download size={15} /> Download Master_Rule_Definitions.xlsx
+          </a>
+
+          <label
+            htmlFor="upload-rules-config-input"
+            className={`btn btn-primary btn-sm ${uploading ? 'opacity-50' : ''}`}
+            style={{ cursor: uploading ? 'wait' : 'pointer' }}
+            title="Upload modified Excel workbook to dynamically alter engine thresholds"
+          >
+            <UploadCloud size={15} /> {uploading ? 'Parsing...' : 'Upload Custom Workbook'}
+            <input
+              id="upload-rules-config-input"
+              type="file"
+              accept=".xlsx"
+              style={{ display: 'none' }}
+              onChange={handleFileUpload}
+              disabled={uploading}
+            />
+          </label>
+
+          {config?.source !== 'DEFAULT' && (
+            <button
+              id="reset-rules-config-btn"
+              onClick={handleReset}
+              className="btn btn-secondary btn-sm"
+              title="Reset active configuration to baseline defaults"
+              style={{ color: 'var(--color-danger)' }}
+            >
+              <RotateCcw size={14} /> Reset Defaults
+            </button>
           )}
         </div>
 
-        {/* Modal Navigation Tabs */}
+        {/* Quick Stats Pill */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+          <span>Checks: <strong style={{ color: 'var(--text-primary)' }}>{config?.master_rules?.length || 18} Defined</strong></span>
+          <span>•</span>
+          <span>Version: <strong style={{ color: 'var(--text-primary)' }}>{config?.version || '1.0.0'}</strong></span>
+          <span>•</span>
+          <span>Updated: <strong style={{ color: 'var(--text-primary)' }}>{config?.updated_at ? new Date(config.updated_at).toLocaleTimeString() : 'Baseline'}</strong></span>
+        </div>
+      </div>
+
+      {/* Notifications / Feedback */}
+      {notification && (
         <div
           style={{
-            display: 'flex',
+            padding: '12px 24px',
+            backgroundColor:
+              notification.type === 'success'
+                ? 'rgba(16, 185, 129, 0.15)'
+                : 'rgba(239, 68, 68, 0.15)',
             borderBottom: '1px solid var(--border-subtle)',
-            backgroundColor: 'rgba(15, 23, 42, 0.95)',
-            padding: '0 24px',
+            color: notification.type === 'success' ? '#34d399' : '#f87171',
+            fontSize: '13px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
           }}
         >
-          <button
-            className={`tab-btn ${activeTab === 'phase1' ? 'active' : ''}`}
-            onClick={() => setActiveTab('phase1')}
-            style={{ padding: '12px 16px', fontSize: '13.5px' }}
-          >
-            Phase 1 Thresholds (Forensic Safety)
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'phase2' ? 'active' : ''}`}
-            onClick={() => setActiveTab('phase2')}
-            style={{ padding: '12px 16px', fontSize: '13.5px' }}
-          >
-            Phase 2 Boundary Matrix (Quality & Capital)
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'mappings' ? 'active' : ''}`}
-            onClick={() => setActiveTab('mappings')}
-            style={{ padding: '12px 16px', fontSize: '13.5px' }}
-          >
-            Sector Keyword Mappings ({config?.sector_mappings?.length || 0})
-          </button>
-        </div>
-
-        {/* Modal Body Content */}
-        <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
-          {loading ? (
-            <div style={{ textAlign: 'center', padding: '50px', color: 'var(--text-secondary)' }}>
-              Loading active configuration...
-            </div>
+          {notification.type === 'success' ? (
+            <CheckCircle2 size={16} />
           ) : (
-            <>
-              {/* TAB 1: PHASE 1 THRESHOLDS */}
-              {activeTab === 'phase1' && (
-                <div>
+            <AlertTriangle size={16} />
+          )}
+          <span>{notification.message}</span>
+        </div>
+      )}
+
+      {/* Keyword Resolver Tester Bar */}
+      <div
+        style={{
+          padding: '12px 24px',
+          backgroundColor: 'rgba(15, 23, 42, 0.7)',
+          borderBottom: '1px solid var(--border-subtle)',
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: '12px',
+        }}
+      >
+        <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+          ⚡ Keyword Resolver Test:
+        </span>
+        <form
+          onSubmit={handleTestKeyword}
+          style={{ display: 'flex', gap: '8px', flex: 1, maxWidth: '440px' }}
+        >
+          <input
+            type="text"
+            placeholder="e.g. SaaS software, Auto components, Mining, EPC..."
+            value={testKeyword}
+            onChange={(e) => setTestKeyword(e.target.value)}
+            className="input-field"
+            style={{
+              fontSize: '12.5px',
+              padding: '6px 12px',
+              background: 'rgba(30, 41, 59, 0.6)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '8px',
+              color: '#fff',
+              width: '100%',
+            }}
+          />
+          <button
+            type="submit"
+            disabled={testingKeyword || !testKeyword.trim()}
+            className="btn btn-secondary btn-sm"
+            style={{ padding: '6px 12px', fontSize: '12px' }}
+          >
+            Resolve
+          </button>
+        </form>
+
+        {testResult && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '12px',
+              background: 'rgba(99, 102, 241, 0.15)',
+              border: '1px solid rgba(99, 102, 241, 0.3)',
+              padding: '4px 10px',
+              borderRadius: '8px',
+              color: '#a5b4fc',
+            }}
+          >
+            <span>Sector: <strong style={{ color: '#fff' }}>{testResult.resolved_sector}</strong></span>
+            <span>•</span>
+            <span style={{ fontStyle: 'italic', opacity: 0.85 }}>{testResult.reason}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Modal Navigation Tabs */}
+      <div
+        style={{
+          display: 'flex',
+          borderBottom: '1px solid var(--border-subtle)',
+          backgroundColor: 'rgba(15, 23, 42, 0.95)',
+          padding: '0 24px',
+          overflowX: 'auto',
+        }}
+      >
+        <button
+          className={`tab-btn ${activeTab === 'master' ? 'active' : ''}`}
+          onClick={() => setActiveTab('master')}
+          style={{ padding: '12px 16px', fontSize: '13.5px' }}
+        >
+          Master Rule Definitions (Checks 1–18)
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'phase2' ? 'active' : ''}`}
+          onClick={() => setActiveTab('phase2')}
+          style={{ padding: '12px 16px', fontSize: '13.5px' }}
+        >
+          Sector Boundary Matrix
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'mappings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('mappings')}
+          style={{ padding: '12px 16px', fontSize: '13.5px' }}
+        >
+          Company Sector Map ({config?.sector_mappings?.length || 0})
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'phase1' ? 'active' : ''}`}
+          onClick={() => setActiveTab('phase1')}
+          style={{ padding: '12px 16px', fontSize: '13.5px' }}
+        >
+          Phase 1 Forensic Thresholds
+        </button>
+      </div>
+
+      {/* Modal Body Content */}
+      <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '50px', color: 'var(--text-secondary)' }}>
+            Loading active configuration...
+          </div>
+        ) : (
+          <>
+            {/* TAB 1: MASTER RULE DEFINITIONS (ALL 18 CHECKS) */}
+            {activeTab === 'master' && (
+              <div>
+                <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                  <div>
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
+                      Sheet: <code>Master_Rule_Definitions</code>. The canonical full-spectrum rule catalog (Checks 1 to 18).
+                    </p>
+                    <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      Philosophy: "Logic in Excel, Execution in Code"
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      className={`btn btn-sm ${masterPhaseFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setMasterPhaseFilter('all')}
+                      style={{ fontSize: '11.5px', padding: '4px 10px' }}
+                    >
+                      All ({config?.master_rules?.length || 18})
+                    </button>
+                    <button
+                      className={`btn btn-sm ${masterPhaseFilter === '1' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setMasterPhaseFilter('1')}
+                      style={{ fontSize: '11.5px', padding: '4px 10px' }}
+                    >
+                      Phase 1 Forensic (6)
+                    </button>
+                    <button
+                      className={`btn btn-sm ${masterPhaseFilter === '2' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setMasterPhaseFilter('2')}
+                      style={{ fontSize: '11.5px', padding: '4px 10px' }}
+                    >
+                      Phase 2 Quality (12)
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ overflowX: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '10px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px', textAlign: 'left' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid var(--border-subtle)', backgroundColor: 'rgba(15, 23, 42, 0.95)', color: 'var(--text-secondary)' }}>
+                        <th style={{ padding: '10px 8px', textAlign: 'center' }}>Phase</th>
+                        <th style={{ padding: '10px 8px', textAlign: 'center' }}>Check #</th>
+                        <th style={{ padding: '10px 10px' }}>Check Name</th>
+                        <th style={{ padding: '10px 10px' }}>Input Metric</th>
+                        <th style={{ padding: '10px 8px', textAlign: 'center' }}>Logic Type</th>
+                        <th style={{ padding: '10px 8px', textAlign: 'center' }}>Default Op</th>
+                        <th style={{ padding: '10px 10px' }}>Default Fail Value</th>
+                        <th style={{ padding: '10px 8px', textAlign: 'center' }}>Sector-Aware?</th>
+                        <th style={{ padding: '10px 12px' }}>Description / Rule Context</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredMasterRules.map((r, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '9px 8px', textAlign: 'center' }}>
+                            <span
+                              style={{
+                                fontSize: '10.5px',
+                                padding: '2px 7px',
+                                borderRadius: '6px',
+                                fontWeight: 600,
+                                backgroundColor: r.phase === 1 ? 'rgba(99, 102, 241, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                                color: r.phase === 1 ? '#a5b4fc' : '#34d399',
+                              }}
+                            >
+                              Phase {r.phase}
+                            </span>
+                          </td>
+                          <td style={{ padding: '9px 8px', textAlign: 'center', fontWeight: 700 }}>
+                            #{r.check_num}
+                          </td>
+                          <td style={{ padding: '9px 10px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {r.check_name}
+                          </td>
+                          <td style={{ padding: '9px 10px' }}>
+                            <code style={{ fontSize: '11.5px', padding: '2px 5px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)' }}>
+                              {r.input_metric}
+                            </code>
+                          </td>
+                          <td style={{ padding: '9px 8px', textAlign: 'center' }}>
+                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                              {r.logic_type}
+                            </span>
+                          </td>
+                          <td style={{ padding: '9px 8px', textAlign: 'center', fontWeight: 700, color: '#fbbf24' }}>
+                            {r.default_op}
+                          </td>
+                          <td style={{ padding: '9px 10px', fontWeight: 700, color: '#f87171' }}>
+                            {r.default_fail_value}
+                          </td>
+                          <td style={{ padding: '9px 8px', textAlign: 'center' }}>
+                            {r.sector_aware ? (
+                              <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', fontWeight: 600 }}>
+                                Yes
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '9px 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            {r.description || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 1: PHASE 1 FORENSIC THRESHOLDS */}
+            {activeTab === 'phase1' && (
+              <div>
                   <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
                       Sheet: <code>Phase1_Thresholds</code>. Decouples strict forensic ceilings and failure triggers for Checks 1–6.
@@ -740,7 +864,66 @@ export default function RulesConfigModal({ isOpen, onClose, onConfigChanged }) {
             </>
           )}
         </div>
+
+        {/* Sticky Footer with prominent Back to Main Page button */}
+        <div
+          style={{
+            padding: '14px 24px',
+            borderTop: '1px solid var(--border-subtle)',
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+            <span style={{ color: '#10b981' }}>●</span>
+            <span>Rules are synchronized in-memory and take effect immediately across all evaluation runs.</span>
+          </div>
+          {!embedded && onClose && (
+            <button
+              id="footer-close-btn"
+              onClick={onClose}
+              className="btn btn-secondary btn-sm"
+              title="Close dialog"
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500, padding: '6px 14px' }}
+            >
+              <X size={15} /> Close
+            </button>
+          )}
+        </div>
       </div>
+  );
+
+  if (embedded) {
+    return (
+      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '40px' }}>
+        {modalContent}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(2, 6, 23, 0.85)',
+        backdropFilter: 'blur(8px)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+      }}
+      onClick={onClose}
+    >
+      {modalContent}
     </div>
   );
 }

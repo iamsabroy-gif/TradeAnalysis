@@ -5,6 +5,7 @@ Strictly maps to Phase1-PhaseC-Scraper-Implementation-Plan.md §5A.2.
 """
 
 import io
+from typing import Any
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -18,7 +19,7 @@ def generate_workbook_template_bytes() -> bytes:
     Pre-populated with all CompanyInput fields from FIELD_COVERAGE_MATRIX.
     """
     wb = openpyxl.Workbook()
-    ws = wb.active
+    ws: Any = wb.active
     ws.title = "Phase 1 Inputs"
 
     # Styling
