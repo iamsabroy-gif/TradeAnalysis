@@ -6,7 +6,7 @@ Maps strictly to implementpdf.md Stage 3 and Phase1-WebApp-Implementation-Plan.m
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 import pymupdf as fitz
 import pdfplumber
 
@@ -30,7 +30,7 @@ from backend.app.acquisition.types import (
     SourceDocument,
 )
 from backend.app.models.coverage import FIELD_COVERAGE_MATRIX
-from backend.app.models.enums import PdfClass, ReportingBasis
+from backend.app.models.enums import Confidence, ExtractionMethod, PdfClass, ReportingBasis
 from backend.app.acquisition.adapters.pdf.units import build_unit_map, apply_unit_normalization
 
 # Explicit, code-verified field coverage
@@ -56,6 +56,7 @@ class AnnualReportAdapter(SourceAdapter):
     """Adapter for extracting structured data from Annual Report PDFs."""
 
     name = "AnnualReportAdapter"
+    owns_fields: FrozenSet[str] = _OWNED_FIELDS
 
     def __init__(self):
         self.owned_fields = _OWNED_FIELDS
@@ -63,7 +64,7 @@ class AnnualReportAdapter(SourceAdapter):
     def owns_field(self, field_name: str) -> bool:
         return field_name in self.owned_fields
 
-    def fetch(self, identity: CompanyIdentity, basis: ReportingBasis) -> List[RawPage]:
+    def fetch(self, ident: CompanyIdentity, basis: ReportingBasis) -> List[RawPage]:
         return []
 
     def parse(self, pages: List[RawPage]) -> AdapterResult:
@@ -120,7 +121,7 @@ class AnnualReportAdapter(SourceAdapter):
                             fields.append(ExtractedField(
                                 field_name="net_worth", value=val, confidence=Confidence.HIGH,
                                 extraction_method=ExtractionMethod.TABLE_PARSE, source=source_filename,
-                                period=doc_//fy or "FY24", basis=basis, page=idx+1,
+                                period=doc_fy or "FY24", basis=basis, page=idx+1,
                                 raw_snippet=f"Net worth found on p.{idx+1}: {val}", document_id=document_id))
                             break
                     if any(f.field_name == "net_worth" for f in fields): break

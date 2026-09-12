@@ -37,6 +37,11 @@ _AUDITOR_REPORT_HEADINGS = [
 _AUDITOR_REPORT_CONFIRMERS = ["to the members", "we have audited"]
 
 
+def _page_text(page: fitz.Page) -> str:
+    raw = page.get_text("text")
+    return str(raw)
+
+
 def locate_auditor_report_pages(
     doc: fitz.Document,
     basis: Optional[ReportingBasis] = None,
@@ -46,7 +51,7 @@ def locate_auditor_report_pages(
     When `basis` is given and the document separates its standalone and
     consolidated sections, only that basis's report is returned.
     """
-    page_texts = [doc[i].get_text("text") for i in range(len(doc))]
+    page_texts = [_page_text(doc[i]) for i in range(len(doc))]
     start, end = 0, len(page_texts)
     if basis is not None:
         page_range = locate_basis_page_range(page_texts, basis.value)
@@ -98,12 +103,12 @@ def extract_audit_opinion_from_doc(
         pages = locate_auditor_report_pages(doc)
     if not pages:
         for page_idx in range(len(doc)):
-            text = normalize_quotes(doc[page_idx].get_text("text")).lower()
+            text = normalize_quotes(_page_text(doc[page_idx])).lower()
             if "independent auditor's report" in text:
                 pages.append(page_idx)
 
     for page_idx in pages:
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         # Opinion wording wraps across lines in the PDF, so match against text
         # with its line breaks collapsed.
         lower = re.sub(r"\s+", " ", normalize_quotes(text).lower())
@@ -164,12 +169,13 @@ def extract_audit_opinion_from_doc(
             "give a true and fair view",
             "gives a true and fair view",
             "unmodified opinion",
+            "unmodified audit opinion",
             "opinion on the financial statements",
         ]
         for ind in clean_indicators:
             if ind in lower:
                 # Ensure it's inside an opinion context
-                m = re.search(r"(?:in our opinion|our opinion).*?(?:true and fair view|unmodified).*?\.", text, re.IGNORECASE | re.DOTALL)
+                m = re.search(r"(?:(?:in our opinion|our opinion).*?|)(?:true and fair view|unmodified).*?\.", text, re.IGNORECASE | re.DOTALL)
                 snippet = m.group(0)[:300] if m else text[:300]
                 return ExtractedField(
                     field_name="audit_opinion",
@@ -227,7 +233,7 @@ def extract_auditor_resignation_from_doc(
     not evidence of "no resignation" (golden rule, chunkrule-v3.md line 7).
     """
     for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         m = _NO_AUDITOR_RESIGNATION.search(norm)
         if m:
@@ -246,7 +252,7 @@ def extract_auditor_resignation_from_doc(
             )
 
     for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         m = _YES_AUDITOR_RESIGNATION.search(norm)
         if m:
@@ -321,7 +327,7 @@ def extract_cfo_changes_from_doc(
     document_id: Optional[str] = None,
 ) -> Optional[ExtractedField]:
     for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         # Require the specific "Changes in Key Managerial Personnel" heading,
         # not a bare "Key Managerial Personnel" mention — the latter also
@@ -458,7 +464,7 @@ def extract_restatement_from_doc(
     in_socie = False  # carried forward across the SOCIE table's continuation pages
 
     for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         if _EMPHASIS_OF_MATTER.search(norm):
             eom_pages.add(page_idx)
@@ -474,9 +480,11 @@ def extract_restatement_from_doc(
 
     # 1. Auditor's Emphasis of Matter mentioning restatement -> True, PRIMARY.
     for page_idx in sorted(eom_pages):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         m = _EMPHASIS_OF_MATTER.search(norm)
+        if not m:
+            continue
         window = norm[m.start(): m.end() + 400]
         if _RESTATEMENT_KEYWORDS.search(window):
             snippet = window[:300]
@@ -664,11 +672,11 @@ def extract_regulatory_action_from_doc(
     document_id: Optional[str] = None,
 ) -> Optional[ExtractedField]:
     for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         m = _NO_REGULATORY_ACTION.search(norm)
         if m:
-            snippet = norm[max(0, m.start() - 40): m.end() + 60]
+            snippet = norm[max(0, m.start() - 20): m.end() + 40]
             return ExtractedField(
                 field_name="regulatory_action",
                 value=RegulatoryActionInput(
@@ -689,7 +697,7 @@ def extract_regulatory_action_from_doc(
             )
 
     for page_idx in range(len(doc)):
-        text = doc[page_idx].get_text("text")
+        text = _page_text(doc[page_idx])
         norm = re.sub(r"\s+", " ", normalize_quotes(text))
         m = _YES_REGULATORY_ACTION.search(norm)
         if m:
