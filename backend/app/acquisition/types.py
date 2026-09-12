@@ -70,12 +70,27 @@ class AdapterError:
 
 
 @dataclass
+class NotFoundField:
+    """
+    Distinguishes "this adapter genuinely owns this field and searched for
+    it in this document, but found nothing" from a field the adapter never
+    attempts at all. A field with no NotFoundField AND no ExtractedField
+    entry was never in scope for this adapter — that is not reported here,
+    since reporting it would blur "not found" with "not attempted".
+    """
+
+    field_name: str
+    reason: str
+
+
+@dataclass
 class AdapterResult:
     adapter: str
     fields: List[ExtractedField] = field(default_factory=list)
     documents: List[DocumentRef] = field(default_factory=list)
     errors: List[AdapterError] = field(default_factory=list)
     pages: List[RawPage] = field(default_factory=list)
+    not_found: List[NotFoundField] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

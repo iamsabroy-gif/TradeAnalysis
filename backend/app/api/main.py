@@ -331,6 +331,7 @@ async def upload_ticker_documents(
         })
 
     extracted_fields = []
+    not_found_fields = []
     if auto_extract and saved_source_docs:
         try:
             parse_res = annual_report_adapter.parse_documents(saved_source_docs)
@@ -348,6 +349,16 @@ async def upload_ticker_documents(
                 }
                 for f in parse_res.fields
             ]
+            # Fields this adapter genuinely owns and searched for but did not
+            # locate in any uploaded document — reported distinctly from a
+            # field the pipeline never attempts at all (e.g. unusual_affiliate_
+            # dealings, which is review-queue-only by design; see FIELD_
+            # COVERAGE_MATRIX). Phase D should render these as their own
+            # "searched, not found" section, not silently blank inputs.
+            not_found_fields = [
+                {"field_name": nf.field_name, "reason": nf.reason}
+                for nf in parse_res.not_found
+            ]
             if parse_res.errors:
                 errors.extend([{"filename": "extraction", "error": f"{e.field_name or 'General'}: {e.message}"} for e in parse_res.errors])
         except Exception as e:
@@ -358,6 +369,7 @@ async def upload_ticker_documents(
         "documents": saved_docs,
         "extracted_fields": extracted_fields,
         "fields_count": len(extracted_fields),
+        "not_found_fields": not_found_fields,
         "errors": errors,
     }
 
@@ -414,6 +426,25 @@ def delete_ticker_document(ticker: str, doc_id: str):
     return {"status": "deleted", "doc_id": doc_id}
 
 
+@app.delete("/api/tickers/{ticker}/reset")
+def reset_ticker(ticker: str):
+    """
+    Wipes every uploaded Annual Report document and pending review-queue
+    item for a ticker, so an analyst can discard a run and start a new
+    company from scratch. Does not touch already-persisted Phase1Result
+    evaluation history (those are versioned records, not working state).
+    """
+    clean_ticker = ticker.strip().upper()
+    documents_deleted = document_store.delete_all_for_ticker(clean_ticker)
+    review_items_cleared = review_store.clear_for_ticker(clean_ticker)
+    return {
+        "status": "reset",
+        "ticker": clean_ticker,
+        "documents_deleted": documents_deleted,
+        "review_items_cleared": review_items_cleared,
+    }
+
+
 @app.post("/api/tickers/{ticker}/documents/extract")
 def extract_ticker_documents(ticker: str, req: ExtractDocumentsRequest):
     """
@@ -436,6 +467,7 @@ def extract_ticker_documents(ticker: str, req: ExtractDocumentsRequest):
         "fields_count": len(res.fields),
         "errors_count": len(res.errors),
         "errors": [{"field_name": e.field_name, "message": e.message} for e in res.errors],
+        "not_found_fields": [{"field_name": nf.field_name, "reason": nf.reason} for nf in res.not_found],
         "fields": [
             {
                 "field_name": f.field_name,

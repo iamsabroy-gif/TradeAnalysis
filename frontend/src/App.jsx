@@ -13,7 +13,8 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   HelpCircle,
-  Database
+  Database,
+  Trash2
 } from 'lucide-react';
 import InvestorView from './components/InvestorView.jsx';
 import AnalystView from './components/AnalystView.jsx';
@@ -22,10 +23,56 @@ import ProvenanceChip from './components/ProvenanceChip.jsx';
 import UploadValidationModal from './components/UploadValidationModal.jsx';
 import DocumentManager from './components/DocumentManager.jsx';
 
+// A fully blank CompanyInput, mirroring backend/app/models/schemas.py field
+// for field. Used by "Start New Company" so a cleared form is genuinely
+// empty everywhere — not the demo fixture, not a prior ticker's leftovers.
+function blankCompanyInput() {
+  return {
+    ticker: '',
+    as_of_date: new Date().toISOString().slice(0, 10),
+    company_type: null,
+    data_basis: 'CONSOLIDATED',
+    auditor_resigned_mid_tenure_last_3y: null,
+    audit_opinion: null,
+    regulatory_action: { active_or_past_5y: null, nature: null, retrieval_tier: null },
+    legal_fees: null,
+    audit_fees: null,
+    legal_fees_prior_year: null,
+    industry_sector: null,
+    legal_fee_surge_explained: null,
+    govt_shareholding_pct: null,
+    promoter_holding_pct_of_company: null,
+    pledged_pct_of_promoter_holding: null,
+    pledged_pct_history_last_4q: null,
+    pledged_pct_history_retrieval_tier: null,
+    pledged_pct_of_total_shares: null,
+    rpt_sales_plus_purchases: null,
+    revenue: null,
+    unusual_affiliate_dealings: null,
+    net_worth: null,
+    litigation_claims_exposure: null,
+    routine_guarantee_exposure: null,
+    contingent_liabilities: null,
+    contingent_liabilities_breakdown_available: null,
+    cfo_last_5y: null,
+    pat_last_5y: null,
+    working_capital_cycle_tier: null,
+    revenue_last_5y: null,
+    cumulative_working_capital_change_5y: null,
+    liquid_cushion_first_year: null,
+    liquid_cushion_last_year: null,
+    years_5y_series_gap_checked: null,
+    cfo_changes_last_3y: null,
+    restatement_of_past_accounts: null,
+    restatement_search_retrieval_tier: null,
+    restatement_esg_only_excluded: null,
+    years_of_track_record_available: null,
+    provenance: {},
+  };
+}
+
 export default function App() {
-  const [fixtures, setFixtures] = useState([]);
-  const [selectedFixtureId, setSelectedFixtureId] = useState('fixture_1_clean');
-  const [formData, setFormData] = useState(null);
+  const [formData, setFormData] = useState(blankCompanyInput());
   const [priorResultId, setPriorResultId] = useState(null);
   
   const [evaluation, setEvaluation] = useState(null);
@@ -42,29 +89,50 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
 
-  // Load fixtures on mount
+  // Confirm the backend is reachable on mount. The form itself starts blank
+  // (see useState above) — no demo data is loaded automatically.
   useEffect(() => {
-    fetch('/api/fixtures')
-      .then((res) => res.json())
-      .then((data) => {
-        setFixtures(data.fixtures);
-        if (data.fixtures.length > 0) {
-          setFormData(data.fixtures[0].data);
-        }
-      })
-      .catch((err) => setError('Failed to connect to Phase 1 backend API'));
+    fetch('/api/health').catch(() => setError('Failed to connect to Phase 1 backend API'));
   }, []);
 
-  // Handle fixture selection
-  const handleSelectFixture = (e) => {
-    const fId = e.target.value;
-    setSelectedFixtureId(fId);
-    const found = fixtures.find((f) => f.id === fId);
-    if (found) {
-      setFormData(found.data);
-      setPriorResultId(null);
-      setStatusMsg(`Loaded test fixture: ${found.label}`);
+  // Discards every finding/reading/extraction for the current ticker —
+  // deletes its uploaded Annual Report documents and pending review-queue
+  // items server-side (not just hidden client-side), then resets the form
+  // to a genuinely blank CompanyInput so the analyst can start a new
+  // company from scratch.
+  const handleStartNewCompany = async () => {
+    const currentTicker = formData?.ticker?.trim();
+    const confirmed = window.confirm(
+      currentTicker
+        ? `This will permanently delete all uploaded documents and pending review items for ${currentTicker.toUpperCase()}, and clear every field. Continue?`
+        : 'This will clear every field on the form. Continue?'
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    setStatusMsg(null);
+
+    if (currentTicker) {
+      try {
+        const res = await fetch(`/api/tickers/${currentTicker.toUpperCase()}/reset`, {
+          method: 'DELETE',
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || 'Reset failed');
+        }
+      } catch (err) {
+        setError(`Reset Error: ${err.message}`);
+        return; // don't clear local state if the server-side wipe failed
+      }
     }
+
+    setFormData(blankCompanyInput());
+    setEvaluation(null);
+    setPriorResultId(null);
+    setUploadResultData(null);
+    setUploadModalOpen(false);
+    setStatusMsg('Cleared. Ready for a new company.');
   };
 
   const handleInputChange = (field, value) => {
@@ -313,22 +381,6 @@ export default function App() {
             <Sparkles size={18} color="var(--color-primary)" />
             <h2 style={{ fontSize: '18px', margin: 0 }}>Data Acquisition & Target Config</h2>
           </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '300px' }}>
-            <label style={{ margin: 0, whiteSpace: 'nowrap', fontSize: '13px' }}>Preset Fixture:</label>
-            <select
-              id="fixture-select-dropdown"
-              value={selectedFixtureId}
-              onChange={handleSelectFixture}
-              style={{ padding: '6px 10px', fontSize: '13px' }}
-            >
-              {fixtures.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.label} → [{f.expected}]
-                </option>
-              ))}
-            </select>
-          </div>
         </div>
 
         {formData && (
@@ -389,6 +441,15 @@ export default function App() {
                 title="Upload analyst Excel workbook or CSV export"
               >
                 <UploadCloud size={16} /> Upload Analyst Workbook (.xlsx / .csv)
+              </button>
+
+              <button
+                id="start-new-company-btn"
+                className="btn btn-secondary"
+                onClick={handleStartNewCompany}
+                title="Deletes all uploaded documents, extracted fields, and review items for this ticker, and clears the form"
+              >
+                <Trash2 size={16} /> Start New Company
               </button>
 
               <input
@@ -719,18 +780,26 @@ export default function App() {
                     <select
                       id="select-regulatory-action"
                       value={
-                        formData.regulatory_action === null
+                        // regulatory_action is a {active_or_past_5y, nature, retrieval_tier}
+                        // object, not a bare boolean — a populated-but-clean object is
+                        // truthy in JS, so it must never be tested directly (that was the
+                        // bug: any non-null finding rendered as "Active Action").
+                        !formData.regulatory_action ||
+                        formData.regulatory_action.active_or_past_5y === null ||
+                        formData.regulatory_action.active_or_past_5y === undefined
                           ? ''
-                          : formData.regulatory_action
+                          : formData.regulatory_action.active_or_past_5y
                           ? 'true'
                           : 'false'
                       }
-                      onChange={(e) =>
-                        handleInputChange(
-                          'regulatory_action',
-                          e.target.value === '' ? null : e.target.value === 'true'
-                        )
-                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        handleInputChange('regulatory_action', {
+                          active_or_past_5y: v === '' ? null : v === 'true',
+                          nature: v === '' ? null : v === 'true' ? null : 'NONE',
+                          retrieval_tier: null,
+                        });
+                      }}
                     >
                       <option value="false">None / Clean</option>
                       <option value="true">Active Action (Fail Check 1)</option>

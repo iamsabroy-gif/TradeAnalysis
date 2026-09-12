@@ -18,19 +18,24 @@ FIELD_COVERAGE_MATRIX: Dict[str, Dict[str, Any]] = {
     },
     "auditor_resigned_mid_tenure_last_3y": {
         "check": 1,
-        "source": "AR + BSE/NSE Reg-30 announcements",
-        "owner": "PDF tier 1 (D) + BSE/NSE adapters (F)",
+        "source": "AR -> Auditor's Report CARO clause 3(xviii); BSE/NSE Reg-30 announcements post-date the AR",
+        "owner": "PDF tier 1 (D) + BSE/NSE adapters (F, not yet implemented)",
         "owner_phase": "D/F",
         "basis_required": False,
         "confidence_floor": "HIGH",
     },
     "regulatory_action": {
         "check": 1,
-        "source": "SEBI enforcement archive + press scan",
-        "owner": "SEBI adapter (F)",
-        "owner_phase": "F",
+        "source": "SEBI enforcement archive (primary, no adapter yet — see Rules §8.4-A); "
+                   "AR Board's Report / Secretarial Audit annexure (PDF fallback per §8.4-A)",
+        "owner": "SEBI adapter (F, not yet implemented); PDF tier 1 fallback (D)",
+        "owner_phase": "D/F",
         "basis_required": False,
-        "confidence_floor": "MANUAL",
+        # Rev — a MEDIUM-confidence AR-sourced "no action found" fallback is
+        # the exact §8.4-A pattern (tag MEDIUM, don't suppress); a positive
+        # hit is tagged LOW by the extractor itself so it never clears this
+        # floor and always lands in manual review regardless.
+        "confidence_floor": "MEDIUM",
     },
     "legal_fees": {
         "check": 1,
@@ -255,15 +260,18 @@ FIELD_COVERAGE_MATRIX: Dict[str, Dict[str, Any]] = {
     # Check 6 — Executive Stability
     "cfo_changes_last_3y": {
         "check": 6,
-        "source": "AR Board's report KMP changes + BSE/NSE Reg-30 announcements",
-        "owner": "PDF tier 1 (D) + BSE/NSE (F)",
+        "source": "AR Board's report KMP changes (current FY only); BSE/NSE Reg-30 announcements post-date the AR",
+        "owner": "PDF tier 1 (D) + BSE/NSE adapters (F, not yet implemented)",
         "owner_phase": "D/F",
         "basis_required": False,
-        "confidence_floor": "HIGH",
+        # A change-log-derived count is inferential, not a stated figure —
+        # tagged MEDIUM by the extractor, so it correctly routes to review
+        # rather than being silently accepted as the full 3-year answer.
+        "confidence_floor": "MEDIUM",
     },
     "restatement_of_past_accounts": {
         "check": 6,
-        "source": "AR -> prior-period-error / restatement note & auditor's EoM",
+        "source": "AR -> prior-period-error / restatement note & auditor's EoM, Rules §8.4-D",
         "owner": "PDF tier 1 (D)",
         "owner_phase": "D",
         "basis_required": False,

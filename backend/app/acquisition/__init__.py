@@ -10,6 +10,7 @@ from .types import (
     SourceUnavailableError,
     TickerNotFoundError,
     AmbiguousTickerError,
+    NotFoundField,
 )
 from .base import SourceAdapter
 from .registry import registry, AdapterRegistry
@@ -49,5 +50,6 @@ __all__ = [
     "validate_upload",
     "document_store",
     "DocumentStore",
+    "NotFoundField",
 ]
 

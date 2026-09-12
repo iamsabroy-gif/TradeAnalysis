@@ -156,6 +156,16 @@ class DocumentStore:
             deleted = True
         return deleted
 
+    def delete_all_for_ticker(self, ticker: str) -> int:
+        """Removes every stored document (PDF + metadata sidecar) for a ticker. Returns the count deleted."""
+        tdir = self._ticker_dir(ticker)
+        count = 0
+        for path in tdir.glob("*"):
+            if path.is_file():
+                path.unlink()
+                count += 1
+        return count // 2  # each document is a (pdf, json) pair
+
 
 # Global instance
 document_store = DocumentStore()

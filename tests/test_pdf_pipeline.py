@@ -234,6 +234,38 @@ def test_api_documents_endpoints():
     assert resp_del.json()["status"] == "deleted"
 
 
+def test_api_reset_ticker_clears_documents_and_review_items():
+    client = TestClient(app)
+    pdf_bytes = create_mock_pdf_bytes(
+        "INDEPENDENT AUDITOR'S REPORT\nOpinion\nFinancial statements give a true and fair view."
+    )
+
+    resp = client.post(
+        "/api/tickers/RESETTEST/documents",
+        files=[("files", ("ar2024.pdf", pdf_bytes, "application/pdf"))],
+        data={"fiscal_year": "FY24", "basis": "CONSOLIDATED"},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["documents"]) == 1
+
+    resp_list_before = client.get("/api/tickers/RESETTEST/documents")
+    assert len(resp_list_before.json()["documents"]) == 1
+
+    resp_reset = client.delete("/api/tickers/RESETTEST/reset")
+    assert resp_reset.status_code == 200
+    reset_data = resp_reset.json()
+    assert reset_data["status"] == "reset"
+    assert reset_data["documents_deleted"] == 1
+
+    resp_list_after = client.get("/api/tickers/RESETTEST/documents")
+    assert resp_list_after.json()["documents"] == []
+
+    # Idempotent: resetting again with nothing left to clear does not error.
+    resp_reset_again = client.delete("/api/tickers/RESETTEST/reset")
+    assert resp_reset_again.status_code == 200
+    assert resp_reset_again.json()["documents_deleted"] == 0
+
+
 def test_tier2_note_table_extraction(tmp_path: Path):
     from backend.app.acquisition.adapters.pdf.table_tier import extract_note_fields_from_pdf
 

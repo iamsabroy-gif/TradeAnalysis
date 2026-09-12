@@ -13,6 +13,40 @@ import {
   Eye
 } from 'lucide-react';
 
+// Mirrors backend/app/acquisition/adapters/pdf/annual_report.py's
+// AnnualReportAdapter._OWNED_FIELDS — the fields this adapter can genuinely
+// attempt from an Annual Report PDF. Deliberately excludes
+// unusual_affiliate_dealings, which is review-queue-only by design and must
+// never be auto-cleared by a PDF extraction run.
+const PHASE_D_PDF_FIELDS = [
+  'audit_opinion',
+  'contingent_liabilities',
+  'audit_fees',
+  'legal_fees',
+  'legal_fees_prior_year',
+  'rpt_sales_plus_purchases',
+  'auditor_resigned_mid_tenure_last_3y',
+  'cfo_changes_last_3y',
+  'restatement_of_past_accounts',
+  'regulatory_action',
+];
+
+// A PDF extraction run is the authoritative refresh for these fields — any
+// value already sitting in formData (demo/fixture defaults, a prior
+// ticker's leftovers, a stale earlier run) must be cleared first so a field
+// this scan genuinely can't find ends up visibly empty, never a stale
+// number wearing a plausible-looking citation and confidence badge.
+function clearPhaseDFields(prev) {
+  const updated = { ...(prev || {}) };
+  const prov = { ...(updated.provenance || {}) };
+  PHASE_D_PDF_FIELDS.forEach((field) => {
+    updated[field] = null;
+    delete prov[field];
+  });
+  updated.provenance = prov;
+  return updated;
+}
+
 export default function DocumentManager({
   ticker,
   formData,
@@ -30,7 +64,15 @@ export default function DocumentManager({
 
   // Fetch documents and review queue for current ticker
   const refreshDocuments = async () => {
-    if (!ticker) return;
+    if (!ticker) {
+      // No ticker (e.g. right after "Start New Company") — this component's
+      // own state must clear too, not just silently keep showing whatever
+      // the previous ticker had.
+      setDocuments([]);
+      setReviewItems([]);
+      setExtractionSummary(null);
+      return;
+    }
     setLoading(true);
     try {
       const cleanTicker = ticker.trim().toUpperCase();
@@ -92,39 +134,46 @@ export default function DocumentManager({
 
       refreshDocuments();
 
+      const notFound = data.not_found_fields || [];
+      setExtractionSummary({
+        ticker: cleanTicker,
+        documents_count: data.documents ? data.documents.length : 1,
+        fields_count: (data.extracted_fields || []).length,
+        errors_count: 0,
+        errors: [],
+        fields: data.extracted_fields || [],
+        notFound,
+      });
+
+      // This upload is the authoritative Phase D refresh for this ticker —
+      // clear every PDF-owned field first so anything this scan didn't
+      // find comes out visibly empty, not a leftover value from a demo
+      // fixture, a prior ticker, or an earlier run.
+      setFormData((prev) => {
+        let updated = clearPhaseDFields(prev);
+        const prov = { ...(updated.provenance || {}) };
+
+        (data.extracted_fields || []).forEach((f) => {
+          updated[f.field_name] = f.value;
+          prov[f.field_name] = {
+            field_name: f.field_name,
+            source: f.source,
+            period: f.period,
+            basis: f.basis,
+            confidence: f.confidence,
+            page: f.page,
+            document_id: f.document_id,
+          };
+        });
+
+        updated.provenance = prov;
+        return updated;
+      });
+
       if (data.extracted_fields && data.extracted_fields.length > 0) {
-        setExtractionSummary({
-          ticker: cleanTicker,
-          documents_count: data.documents ? data.documents.length : 1,
-          fields_count: data.extracted_fields.length,
-          errors_count: 0,
-          errors: [],
-          fields: data.extracted_fields,
-        });
-
-        setFormData((prev) => {
-          const updated = { ...(prev || {}) };
-          const prov = { ...(updated.provenance || {}) };
-
-          data.extracted_fields.forEach((f) => {
-            updated[f.field_name] = f.value;
-            prov[f.field_name] = {
-              field_name: f.field_name,
-              source: f.source,
-              period: f.period,
-              basis: f.basis,
-              confidence: f.confidence,
-              page: f.page,
-              document_id: f.document_id,
-            };
-          });
-
-          updated.provenance = prov;
-          return updated;
-        });
-
         setStatusMsg(
-          `Successfully uploaded and auto-extracted ${data.extracted_fields.length} field(s) with page citations!`
+          `Successfully uploaded and auto-extracted ${data.extracted_fields.length} field(s) with page citations` +
+            (notFound.length > 0 ? ` (${notFound.length} field(s) not found — see below).` : '.')
         );
       } else {
         setStatusMsg(
@@ -219,37 +268,45 @@ export default function DocumentManager({
       }
 
       const data = await res.json();
-      setExtractionSummary(data);
+      const notFound = data.not_found_fields || [];
+      setExtractionSummary({ ...data, notFound });
 
-      // Merge extracted fields into formData so user immediately sees FCI form populate
-      if (data.fields && data.fields.length > 0) {
-        setFormData((prev) => {
-          const updated = { ...(prev || {}) };
-          const prov = { ...(updated.provenance || {}) };
+      // This extraction run is the authoritative Phase D refresh — clear
+      // every PDF-owned field first (see clearPhaseDFields) so a field this
+      // scan genuinely can't find ends up visibly empty, not a stale value
+      // left over from a demo fixture, a prior ticker, or an earlier run.
+      setFormData((prev) => {
+        let updated = clearPhaseDFields(prev);
+        const prov = { ...(updated.provenance || {}) };
 
-          data.fields.forEach((f) => {
-            // Only overwrite if existing field is empty or from lower-confidence source
-            updated[f.field_name] = f.value;
-            prov[f.field_name] = {
-              field_name: f.field_name,
-              source: f.source,
-              period: f.period,
-              basis: f.basis,
-              confidence: f.confidence,
-              page: f.page,
-              document_id: f.document_id,
-            };
-          });
-
-          updated.provenance = prov;
-          return updated;
+        (data.fields || []).forEach((f) => {
+          updated[f.field_name] = f.value;
+          prov[f.field_name] = {
+            field_name: f.field_name,
+            source: f.source,
+            period: f.period,
+            basis: f.basis,
+            confidence: f.confidence,
+            page: f.page,
+            document_id: f.document_id,
+          };
         });
 
+        updated.provenance = prov;
+        return updated;
+      });
+
+      if (data.fields && data.fields.length > 0) {
         setStatusMsg(
-          `Extracted ${data.fields_count} field(s) from ${data.documents_count} Annual Report PDF(s) with page citations.`
+          `Extracted ${data.fields_count} field(s) from ${data.documents_count} Annual Report PDF(s) with page citations` +
+            (notFound.length > 0 ? ` (${notFound.length} field(s) not found — see below).` : '.')
         );
       } else {
-        setStatusMsg('No new fields extracted from uploaded PDFs.');
+        setStatusMsg(
+          notFound.length > 0
+            ? `No fields could be extracted from the uploaded PDF(s). ${notFound.length} field(s) not found — see below.`
+            : 'No new fields extracted from uploaded PDFs.'
+        );
       }
 
       // Refresh review queue
@@ -503,6 +560,39 @@ export default function DocumentManager({
                 <strong>{f.field_name}</strong>: {String(f.value)}
                 {f.page && <span style={{ opacity: 0.7, marginLeft: '4px' }}>[p.{f.page}]</span>}
               </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Fields this adapter searched for and genuinely could not find —
+          shown separately from "Extraction Preview" so a missing field is
+          never confused with a found one (Rules §1: "state exactly what is
+          missing and where it would normally be found"). */}
+      {extractionSummary && extractionSummary.notFound && extractionSummary.notFound.length > 0 && (
+        <div
+          style={{
+            marginTop: '12px',
+            padding: '12px',
+            borderRadius: '8px',
+            background: 'rgba(245, 158, 11, 0.08)',
+            border: '1px solid rgba(245, 158, 11, 0.3)',
+            fontSize: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+            <AlertTriangle size={16} color="#f59e0b" />
+            <span style={{ fontWeight: 600, color: '#fcd34d' }}>
+              Searched, Not Found ({extractionSummary.notFound.length} field(s) — needs manual entry):
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {extractionSummary.notFound.map((nf, idx) => (
+              <div key={idx}>
+                <strong>{nf.field_name}</strong>
+                <span style={{ opacity: 0.8, marginLeft: '6px' }}>{nf.reason}</span>
+              </div>
             ))}
           </div>
         </div>

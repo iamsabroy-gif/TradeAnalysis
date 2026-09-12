@@ -36,6 +36,14 @@ class ReviewStore:
         del self._items[item_id]
         return item
 
+    def clear_for_ticker(self, ticker: str) -> int:
+        """Discards every pending review item for a ticker. Returns the count removed."""
+        clean = ticker.strip().upper()
+        to_remove = [item_id for item_id, item in self._items.items() if item.ticker == clean]
+        for item_id in to_remove:
+            del self._items[item_id]
+        return len(to_remove)
+
 
 # Global review store instance
 review_store = ReviewStore()
