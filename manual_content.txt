@@ -1,0 +1,63 @@
+# User Manual: Master Rule Definition Sheet
+## Understanding and Using the Rule Engine Evaluation Configuration
+
+This document provides a simplified guide to understanding and managing the Master Rule Definition spreadsheet. This file acts as the configuration layer for the Rule Engine Evaluation tool, defining the logic used to screen companies across multiple phases.
+
+---
+
+### 1. Overview of the Process
+The Rule Engine evaluates companies through a series of "Checks." Each check looks at a specific metric (e.g., Promoter Pledge) and compares it against a threshold to determine if the company passes or fails that specific rule.
+
+### 2. Sheet-by-Sheet Guide
+
+#### A. Master_Rule_Definitions (The Core Logic)
+This sheet is the primary index of all rules.
+- Phase: The stage of evaluation (1, 2, or 3).
+- Check #: Unique ID for the rule.
+- Check Name: A descriptive name for the rule.
+- Input Metric: The exact name of the data field the tool will search for in the company data.
+- Logic Type: 
+  - Categorical: Used for text-based checks (e.g., Audit Opinion = 'Clean').
+  - Numeric: Used for number-based checks (e.g., Debt % < 10%).
+- Default Op: The mathematical operator (>, <, !=, =).
+- Default Fail Value: The value that triggers a "FAIL" result.
+- Sector-Aware?: Mark 'Yes' if the threshold for this rule changes depending on the company's sector.
+
+#### B. Sector Boundary Matrix & Phase 2 Matrix (Sector-Specific Rules)
+Not all companies are the same. An "Asset-Light" company (like SaaS) has different healthy metrics than an "Asset-Heavy" company.
+- Sector Profile: The category of the company (e.g., ASSET_LIGHT).
+- Metric: The metric being evaluated.
+- Pass/Fail Thresholds: The boundaries for a positive or negative result.
+- Operator: How the tool should evaluate the range (e.g., 'Range' means it checks if the value falls between the pass and fail thresholds).
+
+#### C. Company Sector Map & Sector Mapping (Classification)
+This tells the tool how to categorize a company.
+- Industry Keyword: Words the tool looks for in the company's description (e.g., "SaaS", "IT Services").
+- Sector Profile: Which profile to apply from the Boundary Matrix (e.g., ASSET_LIGHT).
+
+#### D. Phase 1 & Phase 3 Thresholds (Fine-Tuning)
+- Phase 1 Thresholds: Specific "trip-wire" values for the initial screening.
+- Phase 3 Thresholds: Global parameters (like Target CAGR) used for final scoring and classification (e.g., "Miraculous" vs. "Probable").
+
+---
+
+### 3. Data Entry Best Practices
+To ensure the tool uploads and runs correctly, follow these rules:
+
+1. Do Not Change Headers: The tool expects columns in a specific order. Do not rename or move the top row of any sheet.
+2. Exact Metric Names: The 'Input Metric' must match the data source exactly (case-sensitive).
+3. Consistent Operators: Use only supported operators:
+   - > (Greater than)
+   - < (Less than)
+   - != (Not equal to)
+   - = (Equal to)
+   - Range (Check if value is between two boundaries)
+4. Data Types: Ensure percentages are entered as percentages (e.g., 10% or 0.1) and numbers as numbers.
+
+---
+
+### 4. Upload & Deployment
+1. Update your rules and thresholds in the spreadsheet.
+2. Save the file as an .xlsx workbook.
+3. Upload the file into the Rule Engine Evaluation tool.
+4. Run a test evaluation on a sample company to verify the rules are triggering as expected.

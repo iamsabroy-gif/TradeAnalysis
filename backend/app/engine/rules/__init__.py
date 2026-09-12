@@ -7,6 +7,9 @@ from backend.app.engine.rules.config import (
     MasterRuleDefinition,
     Phase1RuleConfig,
     Phase2RuleConfig,
+    Phase3RuleConfig,
+    Phase3DecisionEntry,
+    Phase3DecisionMatrix,
     SectorThresholdConfig,
     Phase2MatrixConfig,
     SectorKeywordItem,
@@ -32,6 +35,9 @@ __all__ = [
     "MasterRuleDefinition",
     "Phase1RuleConfig",
     "Phase2RuleConfig",
+    "Phase3RuleConfig",
+    "Phase3DecisionEntry",
+    "Phase3DecisionMatrix",
     "SectorThresholdConfig",
     "Phase2MatrixConfig",
     "SectorKeywordItem",
@@ -46,3 +52,4 @@ __all__ = [
     "BaselineEngine",
     "BaselineEvaluationResult",
 ]
+

@@ -38,6 +38,8 @@ from backend.app.models.enums import (
     Confidence,
     PdfClass,
     Phase2Sector,
+    Phase2Verdict,
+    Phase3Verdict,
     ReportingBasis,
     Verdict,
 )
@@ -62,6 +64,21 @@ from backend.app.rendering.phase2 import (
     render_phase2_investor_report,
 )
 from backend.app.persistence.phase2_store import get_phase2_store
+from backend.app.models.phase3_schemas import CompanyPhase3Input, Phase3Result
+from backend.app.engine.phase3 import (
+    Phase3GatekeeperError,
+    make_fair_value_hold_input,
+    make_high_conviction_buy_input,
+    make_overvalued_avoid_input,
+    make_speculative_buy_input,
+    make_story_contradiction_avoid_input,
+    run_phase3,
+)
+from backend.app.rendering.phase3 import (
+    render_phase3_analyst_table,
+    render_phase3_investor_report,
+)
+from backend.app.persistence.phase3_store import get_phase3_store
 from backend.app.engine.rules.config import RulesConfiguration
 from backend.app.engine.rules.registry import (
     get_active_rules_config,
@@ -75,6 +92,7 @@ from backend.app.engine.rules.excel_io import (
 )
 
 phase2_store = get_phase2_store()
+phase3_store = get_phase3_store()
 
 app = FastAPI(
     title="Phase 1 Gatekeeper API",
@@ -788,6 +806,170 @@ def get_phase2_report(result_id: str, format: str = "investor"):
 
 
 # ==============================================================================
+# Phase 3 Gatekeeper Endpoints (Valuation & Story Confirmation Engine)
+# ==============================================================================
+
+class Phase3EvaluationRequest(BaseModel):
+    company_input: CompanyPhase3Input
+    phase2_result_id: Optional[str] = None
+
+
+@app.post("/api/phase3/evaluate")
+def evaluate_phase3(req: Phase3EvaluationRequest):
+    """
+    Evaluates a company through Phase 3 Gatekeeper rules (Valuation & Story Confirmation).
+    If phase2_result_id is provided, validates that Phase 2 passed (CLEARED TO PHASE 3).
+    """
+    p2_res = None
+    if req.phase2_result_id:
+        p2_res = phase2_store.get_result(req.phase2_result_id)
+        if p2_res is None:
+            raise HTTPException(status_code=404, detail=f"Phase 2 result {req.phase2_result_id} not found")
+
+    try:
+        p3_result = run_phase3(req.company_input, phase2_result=p2_res)
+    except Phase3GatekeeperError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    phase3_store.save_result(p3_result, req.company_input)
+    analyst_tbl = render_phase3_analyst_table(p3_result)
+    inv_rep = render_phase3_investor_report(p3_result)
+    res_dict = p3_result.model_dump()
+    return {
+        **res_dict,
+        "result": res_dict,
+        "analyst_table": analyst_tbl,
+        "analyst_markdown": analyst_tbl,
+        "investor_report": inv_rep,
+    }
+
+
+@app.get("/api/phase3/fixtures/{fixture_name}")
+def get_phase3_fixture(fixture_name: str):
+    """
+    Returns canonical test fixtures for Phase 3:
+    high_conviction, speculative, hold, overvalued, story_contradiction.
+    """
+    fixtures_map = {
+        "high_conviction": make_high_conviction_buy_input,
+        "high_conviction_buy": make_high_conviction_buy_input,
+        "speculative": make_speculative_buy_input,
+        "speculative_buy": make_speculative_buy_input,
+        "hold": make_fair_value_hold_input,
+        "fair_value_hold": make_fair_value_hold_input,
+        "overvalued": make_overvalued_avoid_input,
+        "overvalued_avoid": make_overvalued_avoid_input,
+        "story_contradiction": make_story_contradiction_avoid_input,
+        "story_contradiction_avoid": make_story_contradiction_avoid_input,
+    }
+    factory = fixtures_map.get(fixture_name.lower())
+    if not factory:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown fixture: '{fixture_name}'. Available: {list(fixtures_map.keys())}"
+        )
+    return factory().model_dump()
+
+
+@app.get("/api/phase3/results/{result_id}")
+def get_phase3_result(result_id: str):
+    """Fetches stored Phase 3 result."""
+    res = phase3_store.get_result(result_id)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"Phase 3 result {result_id} not found")
+    inp = phase3_store.get_input(result_id)
+    return {
+        "result": res.model_dump(),
+        "company_input": inp.model_dump() if inp else None,
+        "analyst_table": render_phase3_analyst_table(res),
+        "investor_report": render_phase3_investor_report(res),
+    }
+
+
+@app.get("/api/phase3/results/{result_id}/report")
+def get_phase3_report(result_id: str, format: str = "investor"):
+    """
+    Returns the formatted text of the Phase 3 report.
+    format='investor' (default) returns user.md plain-English prose.
+    format='analyst' returns §4 technical markdown table.
+    """
+    res = phase3_store.get_result(result_id)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"Phase 3 result {result_id} not found")
+    if format == "analyst":
+        content = render_phase3_analyst_table(res)
+    else:
+        content = render_phase3_investor_report(res)
+    return Response(content=content, media_type="text/markdown")
+
+
+@app.get("/api/phase3/latest/{ticker}")
+def get_latest_phase3_result(ticker: str):
+    """Fetches the latest Phase 3 result for a ticker."""
+    rid = phase3_store.latest_result_id_for_ticker(ticker.upper())
+    if not rid:
+        raise HTTPException(status_code=404, detail=f"No Phase 3 result on file for {ticker.upper()}")
+    res = phase3_store.get_result(rid)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"Phase 3 result {rid} not found")
+    return {
+        "result": res.model_dump(),
+        "analyst_table": render_phase3_analyst_table(res),
+        "investor_report": render_phase3_investor_report(res),
+    }
+
+
+@app.get("/api/phase3/default-input/{ticker}")
+def get_default_phase3_input(ticker: str):
+    """
+    Pre-populates Phase 3 input fields for a ticker based on Phase 2 data if available.
+    """
+    clean_ticker = ticker.upper()
+    p2_id = phase2_store.latest_result_id_for_ticker(clean_ticker)
+    p2_inp = phase2_store.get_input(p2_id) if p2_id else None
+
+    hist_eps_growth = 15.0
+    claimed_moat = False
+
+    if p2_inp:
+        if p2_inp.moat and p2_inp.moat.claimed_moat_type.value != "NONE":
+            claimed_moat = True
+        if len(p2_inp.financials) >= 2:
+            first_pat = p2_inp.financials[0].pat
+            last_pat = p2_inp.financials[-1].pat
+            years = len(p2_inp.financials) - 1
+            if first_pat > 0 and last_pat > 0 and years > 0:
+                hist_eps_growth = round(((last_pat / first_pat) ** (1.0 / years) - 1.0) * 100.0, 1)
+
+    return {
+        "ticker": clean_ticker,
+        "company_name": clean_ticker,
+        "current_price": 1000.0,
+        "market_cap_cr": 50000.0,
+        "current_pe": 25.0,
+        "peer_avg_pe": 28.0,
+        "hist_5y_avg_pe": 26.0,
+        "current_ev_ebitda": 16.0,
+        "peer_avg_ev_ebitda": 18.0,
+        "hist_5y_avg_ev_ebitda": 17.0,
+        "hist_eps_growth_5y_pct": hist_eps_growth,
+        "dividend_yield_pct": 1.2,
+        "target_cagr_pct": 20.0,
+        "horizon_years": 3,
+        "expected_pe_change_annualized_pct": 0.0,
+        "section_c_high_growth_guidance": False,
+        "section_b_capex_spent_cr": None,
+        "section_b_maintenance_capex_cr": None,
+        "section_g_claimed_high_moat": claimed_moat,
+        "section_h_single_source_dependency_pct": None,
+        "section_h_outsourcing_pct": None,
+        "section_j_guidance_missed_consecutive_years": 0,
+        "section_d_management_tone_defensive": False,
+        "section_d_margin_falling": False,
+    }
+
+
+# ==============================================================================
 # Dynamic Rules Configuration Endpoints (Docs/rule-engine-implementation.md)
 # ==============================================================================
 
@@ -902,12 +1084,13 @@ def resolve_sector(req: SectorResolveRequest):
 class FullEvaluationRequest(BaseModel):
     phase1_input: CompanyInput
     phase2_input: CompanyPhase2Input
+    phase3_input: Optional[CompanyPhase3Input] = None
 
 
 @app.post("/api/rules/evaluate-full")
 def evaluate_full_gatekeeper(req: FullEvaluationRequest):
     """
-    Runs the full end-to-end Gatekeeper pipeline (Phase 1 + Phase 2)
+    Runs the full end-to-end Gatekeeper pipeline (Phase 1 + Phase 2 + Phase 3)
     using the active dynamic rules configuration and sector mappings.
     """
     active_cfg = get_active_rules_config()
@@ -929,6 +1112,7 @@ def evaluate_full_gatekeeper(req: FullEvaluationRequest):
                 "verdict": p1_result.verdict.value,
             },
             "phase2": None,
+            "phase3": None,
             "overall_status": f"REJECTED_AT_PHASE_1 ({p1_result.verdict.value})",
             "active_rules_source": active_cfg.source,
         }
@@ -948,6 +1132,21 @@ def evaluate_full_gatekeeper(req: FullEvaluationRequest):
 
     phase2_store.save_result(p2_result, p2_inp)
 
+    # 5. If Phase 2 clears to Phase 3 and Phase 3 input was provided, evaluate Phase 3
+    p3_data = None
+    if req.phase3_input and p2_result.verdict == Phase2Verdict.CLEARED_TO_PHASE_3:
+        p3_result = run_phase3(req.phase3_input, phase2_result=p2_result)
+        phase3_store.save_result(p3_result, req.phase3_input)
+        p3_data = {
+            "result": p3_result.model_dump(),
+            "verdict": p3_result.verdict.value,
+            "analyst_table": render_phase3_analyst_table(p3_result),
+            "investor_report": render_phase3_investor_report(p3_result),
+        }
+        overall_status = f"{p3_result.verdict.value} (Phase 3 Final)"
+    else:
+        overall_status = p2_result.verdict.value
+
     return {
         "phase1": {
             "result": p1_result.model_dump(),
@@ -959,7 +1158,8 @@ def evaluate_full_gatekeeper(req: FullEvaluationRequest):
             "analyst_table": render_phase2_analyst_table(p2_result),
             "investor_report": render_phase2_investor_report(p2_result),
         },
-        "overall_status": p2_result.verdict.value,
+        "phase3": p3_data,
+        "overall_status": overall_status,
         "active_rules_source": active_cfg.source,
     }
 

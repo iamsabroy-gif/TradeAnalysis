@@ -25,7 +25,8 @@ import {
   ExternalLink,
   Plus,
   Trash2,
-  ArrowRight
+  ArrowRight,
+  Calculator
 } from 'lucide-react';
 
 export function defaultPhase2Input(initialTicker = '', initialPhase1Id = null) {
@@ -110,7 +111,7 @@ export function defaultPhase2Input(initialTicker = '', initialPhase1Id = null) {
   };
 }
 
-export default function Phase2View({ initialTicker, initialPhase1Id, onSwitchToPhase1 }) {
+export default function Phase2View({ initialTicker, initialPhase1Id, onSwitchToPhase1, onSwitchToPhase3 }) {
   const [formData, setFormData] = useState(() => defaultPhase2Input(initialTicker, initialPhase1Id));
   const [phase1Id, setPhase1Id] = useState(initialPhase1Id || '');
   const [evaluation, setEvaluation] = useState(null);
@@ -864,6 +865,26 @@ export default function Phase2View({ initialTicker, initialPhase1Id, onSwitchToP
                     <p style={{ fontSize: '15px', color: '#e2e8f0', maxWidth: '850px', margin: 0 }}>
                       {evaluation.result.verdict_summary}
                     </p>
+
+                    {evaluation.result.verdict === 'CLEARED TO PHASE 3' && onSwitchToPhase3 && (
+                      <div style={{ marginTop: '14px' }}>
+                        <button
+                          id="btn-advance-to-phase3"
+                          className="btn btn-primary btn-sm"
+                          onClick={onSwitchToPhase3}
+                          style={{
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            fontWeight: 600,
+                            padding: '8px 16px',
+                          }}
+                        >
+                          <Calculator size={14} /> Advance to Phase 3: Valuation & Story <ArrowRight size={14} />
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Summary Metric Counters */}

@@ -17,7 +17,8 @@ import {
   Trash2,
   TrendingUp,
   ArrowRight,
-  Sliders
+  Sliders,
+  Calculator
 } from 'lucide-react';
 import InvestorView from './components/InvestorView.jsx';
 import AnalystView from './components/AnalystView.jsx';
@@ -26,6 +27,7 @@ import ProvenanceChip from './components/ProvenanceChip.jsx';
 import UploadValidationModal from './components/UploadValidationModal.jsx';
 import DocumentManager from './components/DocumentManager.jsx';
 import Phase2View from './components/Phase2View.jsx';
+import Phase3View from './components/Phase3View.jsx';
 import RulesConfigModal from './components/RulesConfigModal.jsx';
 
 // A fully blank CompanyInput, mirroring backend/app/models/schemas.py field
@@ -424,6 +426,14 @@ export default function App() {
             <TrendingUp size={18} /> Phase 2: Business Quality (Checks 7–18)
           </button>
           <button
+            id="tab-switch-phase3"
+            className={`tab-btn ${currentPhase === 'phase3' ? 'active' : ''}`}
+            style={{ fontSize: '14px', padding: '10px 22px', borderRadius: '10px' }}
+            onClick={() => setCurrentPhase('phase3')}
+          >
+            <Calculator size={18} /> Phase 3: Valuation & Story (Checks A–C)
+          </button>
+          <button
             id="tab-switch-rules"
             className={`tab-btn ${currentPhase === 'rules' ? 'active' : ''}`}
             style={{ fontSize: '14px', padding: '10px 22px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}
@@ -461,11 +471,18 @@ export default function App() {
           embedded={true}
           onConfigChanged={refreshRulesInfo}
         />
+      ) : currentPhase === 'phase3' ? (
+        <Phase3View
+          initialTicker={formData.ticker}
+          initialPhase2Id={null}
+          onSwitchToPhase2={() => setCurrentPhase('phase2')}
+        />
       ) : currentPhase === 'phase2' ? (
         <Phase2View
           initialTicker={formData.ticker}
           initialPhase1Id={evaluation?.result?.verdict === 'CLEARED TO PHASE 2' ? evaluation.result.result_id : null}
           onSwitchToPhase1={() => setCurrentPhase('phase1')}
+          onSwitchToPhase3={() => setCurrentPhase('phase3')}
         />
       ) : (
         <>

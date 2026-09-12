@@ -17,6 +17,7 @@ from backend.app.engine.rules.config import (
     Phase1RuleConfig,
     Phase2MatrixConfig,
     Phase2RuleConfig,
+    Phase3RuleConfig,
     RulesConfiguration,
     SectorKeywordItem,
     SectorThresholdConfig,
@@ -250,8 +251,48 @@ def generate_default_rules_workbook(config: Optional[RulesConfiguration] = None)
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
+    # ----------------------------------------------------
+    # Sheet 7: Phase3_Thresholds
+    # ----------------------------------------------------
+    ws7: Any = wb.create_sheet(title="Phase3_Thresholds")
+    ws7.views.sheetView[0].showGridLines = True
+    headers7 = ["Parameter", "Value", "Type", "Description"]
+    ws7.append(headers7)
+
+    p3 = config.phase3
+    rows7 = [
+        ["target_cagr", p3.target_cagr, "float", "Target annualised return hurdle (%)"],
+        ["growth_prob_multiplier", p3.growth_prob_multiplier, "float", "Multiplier of historical EPS growth for Miraculous classification"],
+        ["growth_probable_margin", p3.growth_probable_margin, "float", "Buffer above historical growth (pp) for Probable classification"],
+        ["pe_rerate_miraculous_ceiling", p3.pe_rerate_miraculous_ceiling, "float", "Annual P/E re-rating (%) classified as Miraculous"],
+        ["valuation_fair_variance_pct", p3.valuation_fair_variance_pct, "float", "Allowed premium (%) above 5-yr avg to still be FAIR"],
+        ["guidance_miss_fatal_years", p3.guidance_miss_fatal_years, "int", "Consecutive guidance misses triggering fatal contradiction"],
+        ["single_source_dependency_ceiling_pct", p3.single_source_dependency_ceiling_pct, "float", "Single-source vendor (%) ceiling for Vendor Risk"],
+        ["outsourcing_ceiling_pct", p3.outsourcing_ceiling_pct, "float", "Product outsourcing (%) ceiling for Vendor Risk"],
+        ["contradiction_fatal_list", ", ".join(p3.contradiction_fatal_list), "list", "Comma-separated contradiction types treated as fatal"],
+    ]
+    for r in rows7:
+        ws7.append(r)
+
+    for col in range(1, len(headers7) + 1):
+        cell = ws7.cell(row=1, column=col)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for r_idx in range(2, len(rows7) + 2):
+        is_alt = (r_idx % 2 == 0)
+        for col_idx in range(1, len(headers7) + 1):
+            cell = ws7.cell(row=r_idx, column=col_idx)
+            cell.font = ROW_FONT
+            cell.border = THIN_BORDER
+            if is_alt:
+                cell.fill = ALT_FILL
+            if col_idx == 4:
+                cell.font = NOTE_FONT
+
     # Auto-fit columns
-    for ws in [ws1, ws2, ws3, ws4, ws5, ws6]:
+    for ws in [ws1, ws2, ws3, ws4, ws5, ws6, ws7]:
         for col in ws.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
             col_letter = get_column_letter(col[0].column)
@@ -536,6 +577,53 @@ def parse_rules_config_workbook(
     if not mappings:
         mappings = default_cfg.sector_mappings
 
+    # ----------------------------------------------------
+    # 4. Parse Sheet 7: Phase3_Thresholds (optional)
+    # ----------------------------------------------------
+    p3_cfg = Phase3RuleConfig()
+    ws_p3 = _find_sheet(wb, ["Phase3_Thresholds"])
+    if ws_p3 is not None:
+        p3_data: Dict[str, Any] = {}
+        for row in ws_p3.iter_rows(min_row=2, values_only=True):
+            if not row or not row[0]:
+                continue
+            param_name = str(row[0]).strip()
+            param_val = row[1] if len(row) > 1 else None
+            if param_val is not None:
+                p3_data[param_name] = param_val
+
+        def _get_float(key: str, default: float) -> float:
+            v = p3_data.get(key)
+            if v is None:
+                return default
+            parsed = _clean_num(v)
+            return parsed if parsed is not None else default
+
+        def _get_int(key: str, default: int) -> int:
+            v = p3_data.get(key)
+            if v is None:
+                return default
+            parsed = _clean_num(v)
+            return int(parsed) if parsed is not None else default
+
+        fatal_list_raw = p3_data.get("contradiction_fatal_list", "")
+        if isinstance(fatal_list_raw, str) and fatal_list_raw.strip():
+            fatal_list = [s.strip().upper() for s in fatal_list_raw.split(",") if s.strip()]
+        else:
+            fatal_list = p3_cfg.contradiction_fatal_list
+
+        p3_cfg = Phase3RuleConfig(
+            target_cagr=_get_float("target_cagr", p3_cfg.target_cagr),
+            growth_prob_multiplier=_get_float("growth_prob_multiplier", p3_cfg.growth_prob_multiplier),
+            growth_probable_margin=_get_float("growth_probable_margin", p3_cfg.growth_probable_margin),
+            pe_rerate_miraculous_ceiling=_get_float("pe_rerate_miraculous_ceiling", p3_cfg.pe_rerate_miraculous_ceiling),
+            valuation_fair_variance_pct=_get_float("valuation_fair_variance_pct", p3_cfg.valuation_fair_variance_pct),
+            guidance_miss_fatal_years=_get_int("guidance_miss_fatal_years", p3_cfg.guidance_miss_fatal_years),
+            single_source_dependency_ceiling_pct=_get_float("single_source_dependency_ceiling_pct", p3_cfg.single_source_dependency_ceiling_pct),
+            outsourcing_ceiling_pct=_get_float("outsourcing_ceiling_pct", p3_cfg.outsourcing_ceiling_pct),
+            contradiction_fatal_list=fatal_list,
+        )
+
     return RulesConfiguration(
         version="1.0.0",
         source="EXCEL_UPLOAD",
@@ -545,4 +633,5 @@ def parse_rules_config_workbook(
         phase2_rules=p2_rules_cfg,
         phase2_matrix=matrix_final,
         sector_mappings=mappings,
+        phase3=p3_cfg,
     )

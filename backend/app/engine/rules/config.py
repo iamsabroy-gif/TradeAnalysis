@@ -122,10 +122,87 @@ class Phase2RuleConfig(BaseModel):
     )
 
 
+class Phase3RuleConfig(BaseModel):
+    """
+    User-configurable thresholds for Phase 3 Valuation & Story Confirmation Gatekeeper.
+    Eliminates all hardcoded numerics from the Phase 3 engine modules.
+    """
+    # Return Path thresholds (return_path.py)
+    target_cagr: float = Field(
+        default=20.0,
+        description="Target annualised return hurdle (%)"
+    )
+    growth_prob_multiplier: float = Field(
+        default=1.5,
+        description="Multiplier of historical EPS growth that classifies 'Miraculous' probability"
+    )
+    growth_probable_margin: float = Field(
+        default=2.0,
+        description="Buffer above historical growth (pp) still classified as 'Probable'"
+    )
+    pe_rerate_miraculous_ceiling: float = Field(
+        default=20.0,
+        description="Annual P/E re-rating (%) at or above which the path is classified 'Miraculous'"
+    )
+
+    # Valuation thresholds (valuation.py)
+    valuation_fair_variance_pct: float = Field(
+        default=10.0,
+        description="Allowed premium (%) above 5-yr avg / peer avg to still classify as FAIR"
+    )
+
+    # Story Contradiction thresholds (story_scan.py)
+    guidance_miss_fatal_years: int = Field(
+        default=3,
+        description="Consecutive guidance misses triggering a fatal Guidance Gap contradiction"
+    )
+    single_source_dependency_ceiling_pct: float = Field(
+        default=50.0,
+        description="Single-source vendor dependency (%) ceiling for Vendor Risk trigger"
+    )
+    outsourcing_ceiling_pct: float = Field(
+        default=70.0,
+        description="Product outsourcing (%) ceiling for Vendor Risk trigger"
+    )
+    contradiction_fatal_list: List[str] = Field(
+        default_factory=lambda: [
+            "EXPANSION_LIE",
+            "VENDOR_RISK",
+            "GUIDANCE_GAP",
+            "TONE_SHIFT",
+        ],
+        description="StoryContradictionType values that are treated as fatal (trigger AVOID)"
+    )
+
+
+class Phase3DecisionEntry(BaseModel):
+    """
+    A single row in the Phase 3 decision matrix lookup table.
+    Evaluated in priority order; first match wins.
+    """
+    priority: int = Field(description="Evaluation order — lower number = higher priority")
+    story_contradiction: bool = Field(description="True if this row matches when a fatal contradiction exists")
+    return_path: List[str] = Field(
+        description="Matching ReturnProbability values (e.g. ['MIRACULOUS'])"
+    )
+    valuation: List[str] = Field(
+        description="Matching ValuationStatus values (e.g. ['FAIR', 'EXPENSIVE'])"
+    )
+    verdict: str = Field(description="Resulting Phase3Verdict value")
+
+
+class Phase3DecisionMatrix(BaseModel):
+    """
+    Ordered lookup table mapping (story_contradiction, return_path, valuation) → verdict.
+    Replaces the hardcoded if/else chain in orchestrator.synthesize_phase3_verdict().
+    """
+    entries: List[Phase3DecisionEntry] = Field(default_factory=list)
+
+
 class MasterRuleDefinition(BaseModel):
     """
     Specification of a check in the Master Rule Definitions schema (Docs/Rules/baseline-engine-implementation.md §1.1).
-    Covers all 18 checks across Phase 1 and Phase 2.
+    Covers all 18 checks across Phase 1 and Phase 2, plus Phase 3 checks 19–22.
     """
     phase: int = Field(description="Evaluation phase (1 or 2)")
     check_num: int = Field(description="Check number (1 to 18)")
@@ -149,18 +226,20 @@ class SectorKeywordItem(BaseModel):
 
 class RulesConfiguration(BaseModel):
     """
-    Complete configuration container for both Phase 1 and Phase 2.
+    Complete configuration container for Phase 1, Phase 2, and Phase 3.
     Decoupled from execution code and dynamically updatable via Excel.
     """
     version: str = "1.0.0"
     source: str = "DEFAULT"  # "DEFAULT" | "EXCEL_UPLOAD" | "CUSTOM"
-    description: str = "Baseline Calibrated Rules Configuration (Full 18-Check Engine)"
+    description: str = "Baseline Calibrated Rules Configuration (Full 22-Check Engine)"
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     master_rules: List[MasterRuleDefinition] = Field(default_factory=list)
     phase1: Phase1RuleConfig = Field(default_factory=Phase1RuleConfig)
     phase2_rules: Phase2RuleConfig = Field(default_factory=Phase2RuleConfig)
     phase2_matrix: Dict[str, SectorThresholdConfig] = Field(default_factory=dict)
     sector_mappings: List[SectorKeywordItem] = Field(default_factory=list)
+    phase3: Phase3RuleConfig = Field(default_factory=Phase3RuleConfig)
+    phase3_decision_matrix: Phase3DecisionMatrix = Field(default_factory=Phase3DecisionMatrix)
 
 
 def create_default_rules_configuration() -> RulesConfiguration:
@@ -349,16 +428,86 @@ def create_default_rules_configuration() -> RulesConfiguration:
             logic_type="Trend", default_op="Decline", default_fail_value="N/A", sector_aware=False,
             description="Market share trajectory and competitive positioning in core market"
         ),
+
+        # Phase 3 Checks (Valuation & Story Confirmation)
+        MasterRuleDefinition(
+            phase=3, check_num=19, check_name="Valuation Gap", input_metric="PE_EV_EBITDA",
+            logic_type="Relative", default_op=">", default_fail_value="10%", sector_aware=False,
+            description="Current P/E and EV/EBITDA compared to 5-year avg and peer avg with configurable variance"
+        ),
+        MasterRuleDefinition(
+            phase=3, check_num=20, check_name="Return Path", input_metric="Required_EPS_Growth",
+            logic_type="Numeric", default_op=">", default_fail_value="1.5x", sector_aware=False,
+            description="Required EPS growth classified as Probable/Aggressive/Miraculous via configurable multiplier"
+        ),
+        MasterRuleDefinition(
+            phase=3, check_num=21, check_name="Story Scan", input_metric="Contradiction_Count",
+            logic_type="Boolean", default_op="!=", default_fail_value="False", sector_aware=False,
+            description="Four Great Contradictions scan with configurable fatal list"
+        ),
+        MasterRuleDefinition(
+            phase=3, check_num=22, check_name="Decision Matrix", input_metric="Verdict_Lookup",
+            logic_type="Categorical", default_op="Lookup", default_fail_value="N/A", sector_aware=False,
+            description="Priority-ordered matrix mapping (contradiction, return_path, valuation) to final verdict"
+        ),
     ]
+
+    # Phase 3 default decision matrix — mirrors the existing hardcoded priority chain
+    decision_matrix = Phase3DecisionMatrix(entries=[
+        Phase3DecisionEntry(
+            priority=1,
+            story_contradiction=True,
+            return_path=["PROBABLE", "AGGRESSIVE", "MIRACULOUS"],
+            valuation=["FAIR", "EXPENSIVE", "CONCERN"],
+            verdict="AVOID - STORY CONTRADICTION",
+        ),
+        Phase3DecisionEntry(
+            priority=2,
+            story_contradiction=False,
+            return_path=["MIRACULOUS"],
+            valuation=["FAIR", "EXPENSIVE", "CONCERN"],
+            verdict="AVOID - OVERVALUED",
+        ),
+        Phase3DecisionEntry(
+            priority=3,
+            story_contradiction=False,
+            return_path=["PROBABLE"],
+            valuation=["FAIR"],
+            verdict="BUY - HIGH CONVICTION",
+        ),
+        Phase3DecisionEntry(
+            priority=4,
+            story_contradiction=False,
+            return_path=["PROBABLE", "AGGRESSIVE"],
+            valuation=["EXPENSIVE"],
+            verdict="BUY - SPECULATIVE",
+        ),
+        Phase3DecisionEntry(
+            priority=5,
+            story_contradiction=False,
+            return_path=["AGGRESSIVE"],
+            valuation=["FAIR", "CONCERN"],
+            verdict="HOLD - FAIR VALUE",
+        ),
+        Phase3DecisionEntry(
+            priority=6,
+            story_contradiction=False,
+            return_path=["PROBABLE", "AGGRESSIVE", "MIRACULOUS"],
+            valuation=["CONCERN"],
+            verdict="HOLD - FAIR VALUE",
+        ),
+    ])
 
     return RulesConfiguration(
         version="1.0.0",
         source="DEFAULT",
-        description="Standard Baseline Engine Master Configuration (All 18 Checks)",
+        description="Standard Baseline Engine Master Configuration (All 22 Checks)",
         master_rules=master_rules,
         phase1=Phase1RuleConfig(),
         phase2_rules=Phase2RuleConfig(),
         phase2_matrix=matrix,
         sector_mappings=mappings,
+        phase3=Phase3RuleConfig(),
+        phase3_decision_matrix=decision_matrix,
     )
 

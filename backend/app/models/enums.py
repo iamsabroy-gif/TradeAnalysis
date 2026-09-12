@@ -169,3 +169,42 @@ class MoatType(str, Enum):
     COST_ADVANTAGE = "COST_ADVANTAGE"
     NONE = "NONE"
 
+
+class Phase3Verdict(str, Enum):
+    """
+    Phase 3 Gatekeeper final verdicts (Phase3-Rules.md §3 and Phase3-Algorithms.md §3).
+    """
+    BUY_HIGH_CONVICTION = "BUY - HIGH CONVICTION"
+    BUY_SPECULATIVE = "BUY - SPECULATIVE"
+    HOLD_FAIR_VALUE = "HOLD - FAIR VALUE"
+    AVOID_OVERVALUED = "AVOID - OVERVALUED"
+    AVOID_STORY_CONTRADICTION = "AVOID - STORY CONTRADICTION"
+
+
+class ValuationStatus(str, Enum):
+    """
+    Phase 3 Check A Valuation Gap status (Phase3-Algorithms.md §2 Step 2).
+    """
+    FAIR = "FAIR"
+    EXPENSIVE = "EXPENSIVE"
+    CONCERN = "CONCERN"
+
+
+class ReturnProbability(str, Enum):
+    """
+    Phase 3 Check B Return Path 20% CAGR probability (Phase3-Algorithms.md §2 Step 3).
+    """
+    PROBABLE = "PROBABLE"
+    AGGRESSIVE = "AGGRESSIVE"
+    MIRACULOUS = "MIRACULOUS"
+
+
+class StoryContradictionType(str, Enum):
+    """
+    Phase 3 Check C The Four Great Contradictions (Phase3-Algorithms.md §2 Step 4).
+    """
+    EXPANSION_LIE = "EXPANSION_LIE"
+    VENDOR_RISK = "VENDOR_RISK"
+    GUIDANCE_GAP = "GUIDANCE_GAP"
+    TONE_SHIFT = "TONE_SHIFT"
+
