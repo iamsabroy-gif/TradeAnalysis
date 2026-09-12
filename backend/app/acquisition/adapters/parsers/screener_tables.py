@@ -114,7 +114,7 @@ def parse_screener_html(
     cfo_headers = []
     cfo_row = None
     for label, (hdrs, vals) in table_data.items():
-        if "cash from operating activity" in label or "operating cash flow" in label:
+        if any(k in label for k in ["cash from operating activity", "operating cash flow", "cfo/op", "cash flow from operating activities"]):
             cfo_headers = hdrs
             cfo_row = vals
             break
@@ -123,7 +123,7 @@ def parse_screener_html(
     pat_headers = []
     pat_row = None
     for label, (hdrs, vals) in table_data.items():
-        if label == "net profit" or "net profit" in label:
+        if any(k in label for k in ["net profit", "profit after tax", "net income"]):
             pat_headers = hdrs
             pat_row = vals
             break

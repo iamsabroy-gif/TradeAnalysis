@@ -87,7 +87,7 @@ class RateLimiter:
 class SourceHttpClient:
     def __init__(
         self,
-        user_agent: str = "Phase1Gatekeeper/1.0 (+research@antigravity.internal)",
+        user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", 
         cache: Optional[CacheBackend] = None,
         rate_limit_seconds: float = 1.5,
         enforce_robots: bool = True,
